@@ -16,10 +16,17 @@ llm = ChatGroq(model="llama-3.1-8b-instant")
 
 def assistant(state: InawoState):
     business_context = state.get("business_type", "General Support")
+    
+    # We add a STRICT command to the AI here
     system_msg = (
-        f"You are the AI manager for a business in Nigeria. "
-        f"Business Details: {business_context}. Speak warmly and helpful."
+        f"You are the AI manager for a business in Nigeria.\n"
+        f"STRCT RULE: Use ONLY the following information to answer. "
+        f"If a price or item is not listed here, say you don't have that information.\n"
+        f"BUSINESS DATA: {business_context}\n"
+        f"Speak warmly and helpful."
+        f"Keep your responses concise and under 3 sentences unless asked for details."
     )
+    # Rest of the code remains the same...
     input_messages = [{"role": "system", "content": system_msg}] + state["messages"]
     response = llm.invoke(input_messages)
     return {"messages": [response]}
