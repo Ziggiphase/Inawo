@@ -12,7 +12,7 @@ class InawoState(TypedDict):
     business_type: str 
 
 # Use a verified Groq model ID
-llm = ChatGroq(model="llama-3.3-70b-versatile") 
+llm = ChatGroq(model="llama-3.1-8b-instant") 
 
 def assistant(state: InawoState):
     business_context = state.get("business_type", "General Support")
