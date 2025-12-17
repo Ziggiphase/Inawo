@@ -90,11 +90,17 @@ async def root():
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Starting Telegram Bot Task...")
-    await bot_application.initialize()
-    asyncio.create_task(bot_application.updater.start_polling())
-    asyncio.create_task(bot_application.start())
-    print("✅ Bot is online.")
+    print("🚀 System Booting...")
+    # Give Render 2 seconds to shut down old processes completely
+    await asyncio.sleep(2) 
+    try:
+        await bot_application.initialize()
+        asyncio.create_task(bot_application.updater.start_polling())
+        asyncio.create_task(bot_application.start())
+        print("✅ Bot is listening!")
+    except Exception as e:
+        # If a conflict still happens, we catch it so the Web Server stays alive
+        print(f"⚠️ Bot startup delayed or failed: {e}")
 
 if __name__ == "__main__":
     import uvicorn
