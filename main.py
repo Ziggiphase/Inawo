@@ -1,7 +1,11 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import asyncio
+import pandas as pd
+import pdfplumber
+import docx
+from io import BytesIO
 from inawo_bot import app as bot_app
 
 app = FastAPI()
@@ -13,23 +17,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def extract_text_from_file(file_content: bytes, filename: str) -> str:
+    """Helper function to extract text based on file type."""
+    if filename.endswith('.csv'):
+        df = pd.read_csv(BytesIO(file_content))
+        return df.to_string()
+    
+    elif filename.endswith(('.xls', '.xlsx')):
+        df = pd.read_excel(BytesIO(file_content))
+        return df.to_string()
+    
+    elif filename.endswith('.pdf'):
+        with pdfplumber.open(BytesIO(file_content)) as pdf:
+            return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+            
+    elif filename.endswith(('.doc', '.docx')):
+        doc = docx.Document(BytesIO(file_content))
+        return "\n".join([para.text for para in doc.paragraphs])
+    
+    return ""
+
 @app.post("/onboard")
-async def onboard_vendor(request: Request):
-    vendor_data = await request.json()
+async def onboard_vendor(
+    businessName: str = Form(...),
+    category: str = Form(...),
+    catalog_text: str = Form(None),
+    file: UploadFile = File(None)
+):
+    # 1. Start with the manually typed text if it exists
+    final_catalog = catalog_text if catalog_text else ""
+
+    # 2. If a file was uploaded, extract its text and append it
+    if file:
+        content = await file.read()
+        extracted = extract_text_from_file(content, file.filename)
+        final_catalog += f"\n\n[Content from {file.filename}]:\n{extracted}"
+
+    # 3. Save everything to our registry
+    vendor_data = {
+        "businessName": businessName,
+        "category": category,
+        "catalog": final_catalog
+    }
+    
     with open("registry.json", "w") as f:
         json.dump(vendor_data, f)
-    print(f"✅ Onboarded: {vendor_data.get('businessName')}")
-    return {"status": "success"}
+        
+    print(f"✅ Onboarded {businessName} with catalog data.")
+    return {"status": "success", "message": "Inawo AI is now trained on your documents!"}
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Booting Inawo System...")
-    # Critical: Initialize the bot within the FastAPI event loop
     await bot_app.initialize()
     await bot_app.updater.start_polling()
     await bot_app.start()
-    print("✅ System Online: API and Bot are running.")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
