@@ -68,10 +68,13 @@ async def onboard_vendor(
 
 @app.on_event("startup")
 async def startup_event():
+    print("🚀 System Booting...")
     await bot_app.initialize()
-    await bot_app.updater.start_polling()
-    await bot_app.start()
-
+    # We use create_task so it runs "in the background"
+    asyncio.create_task(bot_app.updater.start_polling())
+    asyncio.create_task(bot_app.start())
+    print("✅ System Online.")
+    
 if __name__ == "__main__":
     import uvicorn
     import os
