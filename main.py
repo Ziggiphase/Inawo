@@ -1,17 +1,20 @@
-from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
+import os
 import json
 import asyncio
-import os
+from io import BytesIO
+
+# 1. NEW IMPORTS FOR FILE PROCESSING
 import pandas as pd
 import pdfplumber
 import docx
-from io import BytesIO
+from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+
+# Import your bot instance
 from inawo_bot import bot_application
 
 app = FastAPI()
 
-# 1. CORS Setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,11 +22,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- THE EXTRACTOR FUNCTION ---
+# --- THE EXTRACTOR (How we turn files into AI context) ---
 def extract_text_from_file(file_content: bytes, filename: str) -> str:
-    """Processes bytes into a readable string based on file extension."""
+    """Helper function to extract text based on file type."""
     try:
-        # Convert bytes to a file-like object in memory
+        # We use BytesIO to read the file in memory without saving it to disk
         stream = BytesIO(file_content)
         
         if filename.endswith('.csv'):
@@ -36,7 +39,7 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
         
         elif filename.endswith('.pdf'):
             with pdfplumber.open(stream) as pdf:
-                # Loop through pages and grab text
+                # Extract text from every page
                 return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
         
         elif filename.endswith(('.doc', '.docx')):
@@ -44,12 +47,12 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
             return "\n".join([para.text for para in doc.paragraphs])
             
     except Exception as e:
-        print(f"Parsing error: {e}")
-        return f"[Error parsing file {filename}]"
+        print(f"Error parsing {filename}: {e}")
+        return f"[Error: Could not read content from {filename}]"
     
     return ""
 
-# --- THE UPDATED ONBOARD ROUTE ---
+# --- THE ONBOARD ROUTE (The core of the SaaS) ---
 @app.post("/onboard")
 async def onboard_vendor(
     businessName: str = Form(...),
@@ -57,45 +60,41 @@ async def onboard_vendor(
     knowledgeBase: str = Form(None),
     file: UploadFile = File(None)
 ):
-    """
-    This route now handles 'Multipart' data. 
-    It takes text from the form AND extracts text from the uploaded file.
-    """
-    # 1. Start with the manual text entered in the textarea
+    # 1. Get the manual text if any
     final_knowledge = knowledgeBase if knowledgeBase else ""
 
-    # 2. If a file was uploaded, extract its content
+    # 2. Extract file content if a file was uploaded
     if file:
         file_bytes = await file.read()
         extracted_text = extract_text_from_file(file_bytes, file.filename)
-        # Combine manual text + file text
-        final_knowledge += f"\n\n[Content from {file.filename}]:\n{extracted_text}"
+        # We append the file text to the manual text
+        final_knowledge += f"\n\n--- DOCUMENT CONTENT ({file.filename}) ---\n{extracted_text}"
 
-    # 3. Save the combined data to your local registry
+    # 3. Create the data structure for registry.json
     vendor_data = {
         "businessName": businessName,
         "category": category,
         "knowledgeBase": final_knowledge
     }
     
+    # 4. Save to the shared JSON file
     with open("registry.json", "w") as f:
         json.dump(vendor_data, f)
         
-    print(f"✅ Onboarded {businessName}. Data length: {len(final_knowledge)} chars.")
-    return {"status": "success", "message": "Inawo AI updated!"}
+    print(f"✅ Onboarded: {businessName}")
+    return {"status": "success", "message": "Inawo AI is now trained!"}
 
-# --- THE ROOT & STARTUP ---
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {"status": "Inawo API is running"}
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Starting Bot...")
+    print("🚀 Starting Telegram Bot Task...")
     await bot_application.initialize()
     asyncio.create_task(bot_application.updater.start_polling())
     asyncio.create_task(bot_application.start())
-    print("✅ Bot Listening.")
+    print("✅ Bot is online.")
 
 if __name__ == "__main__":
     import uvicorn
