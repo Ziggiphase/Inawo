@@ -22,6 +22,7 @@ def assistant(state: InawoState):
         f"Context: {business_context}. "
         "Use the provided knowledge base to answer prices accurately. "
         "If the user shares their name, remember it. Speak warmly in a Nigerian tone."
+        "You will receive data extracted from a document that may contain table separators like '|' or strange formatting. Your job is to parse this information intelligently and provide clear, conversational answers to customers. If a price is mentioned next to an item name, treat it as the absolute truth."
     )
     
     # LangGraph handles message history automatically with add_messages
