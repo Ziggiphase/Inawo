@@ -3,21 +3,23 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver 
 from langchain_groq import ChatGroq
+from langchain_core.runnables import RunnableConfig  # <--- Add this import
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# We only keep 'messages' in the persistent state
 class InawoState(TypedDict):
     messages: Annotated[list, add_messages]
 
 llm = ChatGroq(model="llama-3.3-70b-versatile")
 
-def assistant(state: InawoState, config: dict):
-    # Retrieve the fresh business context passed during 'ainvoke'
-    # This ensures the bot always uses the latest PDF data
-    business_context = config.get("configurable", {}).get("business_data", "General Vendor")
+# --- UPDATED FUNCTION SIGNATURE ---
+def assistant(state: InawoState, config: RunnableConfig): # <--- Use RunnableConfig
+    # Access the business data from the config
+    # We use .get() on the 'configurable' key
+    configurable = config.get("configurable", {})
+    business_context = configurable.get("business_data", "General Vendor")
     
     system_msg = (
         f"You are a helpful AI assistant for a business in Nigeria.\n"
@@ -30,7 +32,6 @@ def assistant(state: InawoState, config: dict):
     response = llm.invoke(input_messages)
     return {"messages": [response]}
 
-# Persistence layer
 memory = MemorySaver()
 
 workflow = StateGraph(InawoState)
@@ -38,5 +39,4 @@ workflow.add_node("assistant_node", assistant)
 workflow.add_edge(START, "assistant_node")
 workflow.add_edge("assistant_node", END)
 
-# Compile with the memory checkpointer
 inawo_app = workflow.compile(checkpointer=memory)
