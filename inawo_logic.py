@@ -1,36 +1,36 @@
 from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import MemorySaver  # <--- Added this
+from langgraph.checkpoint.memory import MemorySaver 
 from langchain_groq import ChatGroq
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# We only keep 'messages' in the persistent state
 class InawoState(TypedDict):
     messages: Annotated[list, add_messages]
-    business_type: str 
 
 llm = ChatGroq(model="llama-3.3-70b-versatile")
 
-def assistant(state: InawoState):
-    business_context = state.get("business_type", "General")
+def assistant(state: InawoState, config: dict):
+    # Retrieve the fresh business context passed during 'ainvoke'
+    # This ensures the bot always uses the latest PDF data
+    business_context = config.get("configurable", {}).get("business_data", "General Vendor")
     
     system_msg = (
-        f"You are a helpful AI assistant for a business in Nigeria. "
-        f"Context: {business_context}. "
-        "Use the provided knowledge base to answer prices accurately. "
-        "If the user shares their name, remember it. Speak warmly in a Nigerian tone."
-        "You will receive data extracted from a document that may contain table separators like '|' or strange formatting. Your job is to parse this information intelligently and provide clear, conversational answers to customers. If a price is mentioned next to an item name, treat it as the absolute truth."
+        f"You are a helpful AI assistant for a business in Nigeria.\n"
+        f"LATEST BUSINESS INFO: {business_context}\n"
+        "Use the provided info to answer accurately. Speak warmly in a Nigerian tone. "
+        "Remember the user's name and details from previous messages in this chat."
     )
     
-    # LangGraph handles message history automatically with add_messages
     input_messages = [{"role": "system", "content": system_msg}] + state["messages"]
     response = llm.invoke(input_messages)
     return {"messages": [response]}
 
-# Define the memory checkpointer
+# Persistence layer
 memory = MemorySaver()
 
 workflow = StateGraph(InawoState)
@@ -38,5 +38,5 @@ workflow.add_node("assistant_node", assistant)
 workflow.add_edge(START, "assistant_node")
 workflow.add_edge("assistant_node", END)
 
-# IMPORTANT: Compile with checkpointer
+# Compile with the memory checkpointer
 inawo_app = workflow.compile(checkpointer=memory)
