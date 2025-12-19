@@ -1,32 +1,7 @@
-import os
-import json
-import asyncio
-from io import BytesIO
+# Replace your existing extract_text_from_file with this:
 
-# 1. NEW IMPORTS FOR FILE PROCESSING
-import pandas as pd
-import pdfplumber
-import docx
-from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-
-# Import your bot instance
-from inawo_bot import bot_application
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- THE EXTRACTOR (How we turn files into AI context) ---
 def extract_text_from_file(file_content: bytes, filename: str) -> str:
-    """Helper function to extract text based on file type."""
     try:
-        # We use BytesIO to read the file in memory without saving it to disk
         stream = BytesIO(file_content)
         
         if filename.endswith('.csv'):
@@ -38,9 +13,23 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
             return df.to_string()
         
         elif filename.endswith('.pdf'):
+            text_output = []
             with pdfplumber.open(stream) as pdf:
-                # Extract text from every page
-                return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+                for page in pdf.pages:
+                    # Try extracting tables first
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            for row in table:
+                                # Clean row and join with pipes for AI readability
+                                clean_row = " | ".join([str(i).strip() for i in row if i])
+                                text_output.append(clean_row)
+                    
+                    # Also get the regular text
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_output.append(page_text)
+            return "\n".join(text_output)
         
         elif filename.endswith(('.doc', '.docx')):
             doc = docx.Document(stream)
@@ -51,58 +40,3 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
         return f"[Error: Could not read content from {filename}]"
     
     return ""
-
-# --- THE ONBOARD ROUTE (The core of the SaaS) ---
-@app.post("/onboard")
-async def onboard_vendor(
-    businessName: str = Form(...),
-    category: str = Form(...),
-    knowledgeBase: str = Form(None),
-    file: UploadFile = File(None)
-):
-    # 1. Get the manual text if any
-    final_knowledge = knowledgeBase if knowledgeBase else ""
-
-    # 2. Extract file content if a file was uploaded
-    if file:
-        file_bytes = await file.read()
-        extracted_text = extract_text_from_file(file_bytes, file.filename)
-        # We append the file text to the manual text
-        final_knowledge += f"\n\n--- DOCUMENT CONTENT ({file.filename}) ---\n{extracted_text}"
-
-    # 3. Create the data structure for registry.json
-    vendor_data = {
-        "businessName": businessName,
-        "category": category,
-        "knowledgeBase": final_knowledge
-    }
-    
-    # 4. Save to the shared JSON file
-    with open("registry.json", "w") as f:
-        json.dump(vendor_data, f)
-        
-    print(f"✅ Onboarded: {businessName}")
-    return {"status": "success", "message": "Inawo AI is now trained!"}
-
-@app.api_route("/", methods=["GET", "HEAD"])
-async def root():
-    return {"status": "Inawo API is running"}
-
-@app.on_event("startup")
-async def startup_event():
-    print("🚀 System Booting...")
-    # Give Render 2 seconds to shut down old processes completely
-    await asyncio.sleep(2) 
-    try:
-        await bot_application.initialize()
-        asyncio.create_task(bot_application.updater.start_polling())
-        asyncio.create_task(bot_application.start())
-        print("✅ Bot is listening!")
-    except Exception as e:
-        # If a conflict still happens, we catch it so the Web Server stays alive
-        print(f"⚠️ Bot startup delayed or failed: {e}")
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
