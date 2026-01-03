@@ -8,26 +8,33 @@ from inawo_logic import inawo_app
 load_dotenv()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
     chat_id = str(update.message.chat_id)
+    db = next(get_db())
     
-    # Always pull the FRESH PDF data from the registry
-    try:
-        with open("registry.json", "r") as f:
-            vendor_data = json.load(f)
-        biz_info = vendor_data.get("knowledgeBase", "No data available.")
-        biz_name = vendor_data.get("businessName", "Inawo Vendor")
-    except FileNotFoundError:
-        biz_info, biz_name = "System active.", "Inawo"
+    # 1. Look up which vendor this chat belongs to
+    session = db.query(ChatSession).filter(ChatSession.id == chat_id).first()
+    
+    if not session:
+        await update.message.reply_text("Please start the chat via a vendor's unique link.")
+        return
 
-    # We pass the context into the 'configurable' field
-    # This prevents the memory saver from 'locking' old business data
+    # 2. Check if the Vendor is currently "In the Chat" (Manual Mode)
+    if session.is_manual_mode:
+        # AI stays silent or just logs the message for the dashboard
+        return 
+
+    # 3. Get Vendor's specific Knowledge Base
+    vendor = db.query(Vendor).filter(Vendor.id == session.vendor_id).first()
+    biz_info = vendor.knowledge_base.content if vendor.knowledge_base else "General info"
+
+    # 4. Run AI with this specific vendor's context
     config = {
         "configurable": {
             "thread_id": chat_id,
-            "business_data": f"Business: {biz_name}. Catalog: {biz_info}"
+            "business_data": f"Business: {vendor.business_name}. Catalog: {biz_info}"
         }
     }
+    # ... call inawo_app as usual
 
     inputs = {"messages": [("user", user_text)]}
     
