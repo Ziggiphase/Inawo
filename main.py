@@ -8,6 +8,7 @@ import pandas as pd
 import pdfplumber
 import docx
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
+from fastapi import Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, Date
@@ -219,17 +220,20 @@ async def get_vendor_stats(vendor_id: int, db: Session = Depends(get_db)):
 
 # WHATSAPP WEBHOOK VERIFICATION (Needed for Step 1)
 @app.get("/webhook")
-async def verify_webhook(request: Request):
-    # This is a one-time check Meta does to make sure your server is real
-    verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN") # Create a secret string in .env
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
+async def verify_webhook(
+    mode: str = Query(None, alias="hub.mode"),
+    token: str = Query(None, alias="hub.verify_token"),
+    challenge: str = Query(None, alias="hub.challenge")
+):
+    verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
     if mode == "subscribe" and token == verify_token:
-        return int(challenge)
+        print("✅ Webhook Verified successfully!")
+        # IMPORTANT: Return the challenge as a plain string response
+        return Response(content=challenge, media_type="text/plain")
+        
+    print("❌ Webhook Verification failed!")
     raise HTTPException(status_code=403, detail="Verification failed")
-
 
 
 # --- BOT LIFECYCLE ---
