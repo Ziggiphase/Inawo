@@ -10,6 +10,42 @@ from models import Sale, ChatSession
 
 load_dotenv()
 
+from telegram import Update
+from telegram.ext import CommandHandler, ContextTypes
+from database import get_db
+from models import ChatSession, Vendor
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.message.chat_id)
+    # 1. Extract the vendor_id from the /start command (e.g., /start 5)
+    args = context.args
+    db = next(get_db())
+
+    if args:
+        vendor_id = int(args[0])
+        # 2. Check if vendor exists
+        vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        
+        if vendor:
+            # 3. Create or Update the ChatSession
+            session = db.query(ChatSession).filter(ChatSession.id == chat_id).first()
+            if not session:
+                session = ChatSession(id=chat_id, vendor_id=vendor_id)
+                db.add(session)
+            else:
+                session.vendor_id = vendor_id
+            db.commit()
+
+            await update.message.reply_text(
+                f"Welcome to {vendor.business_name}! 🛍️\n"
+                "I am their AI assistant. How can I help you today?"
+            )
+            return
+
+    await update.message.reply_text("Welcome to Inawo! Please use a vendor's link to start shopping.")
+
+# Add this to your bot_application in inawo_bot.py
+# bot_application.add_handler(CommandHandler("start", start))
 # --- 1. EXISTING TEXT HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -73,5 +109,6 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot_application = ApplicationBuilder().token(TOKEN).build()
 
 # Register the photo handler BEFORE or AFTER the text handler
+bot_application.add_handler(CommandHandler("start", start))
 bot_application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 bot_application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
