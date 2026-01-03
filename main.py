@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from database import get_db, engine
 import models
 from security import hash_password, verify_password, create_access_token
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 
 # Initialize Database Tables
 models.Base.metadata.create_all(bind=engine)
@@ -34,9 +34,19 @@ app.add_middleware(
 
 # --- SCHEMAS FOR API ---
 class VendorSignup(BaseModel):
-    email: str
-    password: str
+    # Step 1: Account
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    
+    # Step 2: Business Profile
     business_name: str
+    phone_number: str
+    category: str  # e.g., Fashion, Electronics
+    
+    # Step 3: Payout Info (Bank Details)
+    bank_name: str
+    account_number: str = Field(..., min_length=10, max_length=10)
+    account_name: str
 
 # --- THE EXTRACTOR ---
 def extract_text_from_file(file_content: bytes, filename: str) -> str:
@@ -69,6 +79,7 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
 
 @app.post("/signup")
 async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
+    # Check if exists
     existing = db.query(models.Vendor).filter(models.Vendor.email == vendor.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -76,11 +87,16 @@ async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
     new_vendor = models.Vendor(
         email=vendor.email,
         business_name=vendor.business_name,
+        phone_number=vendor.phone_number,
+        category=vendor.category,
+        bank_name=vendor.bank_name,
+        account_number=vendor.account_number,
+        account_name=vendor.account_name,
         password_hash=hash_password(vendor.password)
     )
     db.add(new_vendor)
     db.commit()
-    return {"status": "success", "message": "Vendor account created"}
+    return {"status": "success", "message": "Professional profile created!"}
 
 @app.post("/login")
 async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
