@@ -1,34 +1,56 @@
 import base64
-from io import BytesIO
-from PIL import Image
+from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage
+import os
+import json
 
-def encode_image_to_base64(image_bytes):
+# Initialize the Groq Vision model
+# llama-3.2-11b-vision-preview is excellent for structured data extraction
+llm_vision = ChatGroq(
+    model="llama-3.2-11b-vision-preview",
+    temperature=0,  # Set to 0 for consistent, factual extraction
+    groq_api_key=os.getenv("GROQ_API_KEY")
+)
+
+def encode_image(image_bytes):
+    """Converts image bytes to a base64 string for the API."""
     return base64.b64encode(image_bytes).decode("utf-8")
 
-async def extract_receipt_data(image_bytes):
-    base64_image = encode_image_to_base64(image_bytes)
-    
-    # Prompting Llama 3.2-Vision for specific Nigerian bank details
-    prompt = """
-    Analyze this bank transfer receipt. Extract the following in JSON format:
-    - sender_name: The name of the person who sent the money.
-    - amount: The numeric value only (e.g., 5000).
-    - date: The transaction date.
-    - bank: The name of the bank (e.g., GTBank, Kuda, Zenith).
-    - status: 'Success' or 'Pending'.
-    Return ONLY the JSON object.
+async def extract_receipt_details(image_bytes):
     """
-
-    # Replace with your actual LLM calling logic
-    response = await llm_vision_client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview", # or your specific model ID
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-            ]
-        }],
-        response_format={"type": "json_object"}
+    Analyzes a bank receipt image and returns structured JSON.
+    """
+    base64_image = encode_image(image_bytes)
+    
+    # Prompt optimized for Nigerian bank transfer screenshots
+    prompt = (
+        "Analyze this Nigerian bank transfer receipt/screenshot. "
+        "Extract the following details and return ONLY a valid JSON object: "
+        "{ "
+        "'sender_name': 'Full name of sender', "
+        "'amount': 'Numerical value only, no commas', "
+        "'date': 'Transaction date', "
+        "'bank': 'Name of the bank (e.g. OPay, Kuda, GTB)', "
+        "'status': 'Success, Pending, or Failed' "
+        "}"
     )
-    return response.choices[0].message.content
+
+    # LangChain Multimodal Message Format
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": prompt},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+            },
+        ]
+    )
+
+    try:
+        response = await llm_vision.ainvoke([message])
+        # Clean up the response in case the model adds markdown backticks
+        content = response.content.replace("```json", "").replace("```", "").strip()
+        return json.loads(content)
+    except Exception as e:
+        print(f"Vision Error: {e}")
+        return {"error": "Could not parse receipt"}
