@@ -217,6 +217,20 @@ async def get_vendor_stats(vendor_id: int, db: Session = Depends(get_db)):
         "chart_data": chart_data
     }
 
+# WHATSAPP WEBHOOK VERIFICATION (Needed for Step 1)
+@app.get("/webhook")
+async def verify_webhook(request: Request):
+    # This is a one-time check Meta does to make sure your server is real
+    verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN") # Create a secret string in .env
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    if mode == "subscribe" and token == verify_token:
+        return int(challenge)
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
 
 # --- BOT LIFECYCLE ---
 @app.on_event("startup")
