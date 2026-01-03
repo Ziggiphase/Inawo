@@ -22,8 +22,7 @@ def assistant(state: InawoState, config: RunnableConfig): # <--- Use RunnableCon
     business_context = configurable.get("business_data", "General Vendor")
     
     system_msg = (
-        f"You are a helpful AI assistant for a business in Nigeria.\n"
-        f"LATEST BUSINESS INFO: {business_context}\n"
+        f"You are an AI assistant for {business_name}. Current Status: {is_manual_mode}. If status is True, the owner is currently talking to the customer. Your role shifts to 'Silent Observer'—only provide suggestions if the owner asks you. If status is False, you are the primary 24/7 responder."
         "Use the provided info to answer accurately. Speak warmly in a Nigerian tone. "
         "Remember the user's name and details from previous messages in this chat."
     )
