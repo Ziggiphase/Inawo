@@ -10,6 +10,8 @@ import docx
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import func, cast, Date
+from datetime import datetime, timedelta
 
 # --- NEW IMPORTS FOR V2 ---
 from database import get_db, engine
@@ -187,6 +189,33 @@ async def send_admin_message(payload: AdminMessage):
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vendor/{vendor_id}/stats")
+async def get_vendor_stats(vendor_id: int, db: Session = Depends(get_db)):
+    # 1. Calculate Total Revenue (Confirmed only)
+    total_revenue = db.query(func.sum(models.Sale.amount))\
+        .filter(models.Sale.vendor_id == vendor_id, models.Sale.status == "Confirmed")\
+        .scalar() or 0
+    
+    # 2. Daily Sales Data for the last 7 days (for the Chart)
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    daily_sales = db.query(
+        cast(models.Sale.created_at, Date).label("day"),
+        func.sum(models.Sale.amount).label("total")
+    ).filter(
+        models.Sale.vendor_id == vendor_id,
+        models.Sale.status == "Confirmed",
+        models.Sale.created_at >= seven_days_ago
+    ).group_by("day").order_by("day").all()
+
+    # Format for Recharts (Frontend)
+    chart_data = [{"date": str(s.day), "amount": s.total} for s in daily_sales]
+    
+    return {
+        "total_revenue": total_revenue,
+        "chart_data": chart_data
+    }
 
 
 # --- BOT LIFECYCLE ---
