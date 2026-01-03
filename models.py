@@ -9,12 +9,20 @@ class Vendor(Base):
     id = Column(Integer, primary_key=True)
     business_name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
+    phone_number = Column(String(20)) # Critical for Nigerian commerce
     password_hash = Column(String(200), nullable=False)
     
-    # Bank Details for Payments
+    # Professional Profile
+    category = Column(String(50)) # e.g., Fashion, Electronics, Catering
+    business_address = Column(String(255))
+    
+    # Enhanced Bank Details for trust
     bank_name = Column(String(100))
     account_number = Column(String(20))
-    account_name = Column(String(100))
+    account_name = Column(String(100)) # Must match business/personal name
+    
+    # KYC (Can be made mandatory at MVP stage)
+    is_verified = Column(Boolean, default=False)
     
     # Relationships
     knowledge_base = relationship("KnowledgeBase", back_populates="vendor", uselist=False)
