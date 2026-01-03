@@ -15,11 +15,19 @@ class InawoState(TypedDict):
 llm = ChatGroq(model="llama-3.3-70b-versatile")
 
 # --- UPDATED FUNCTION SIGNATURE ---
-def assistant(state: InawoState, config: RunnableConfig): # <--- Use RunnableConfig
-    # Access the business data from the config
-    # We use .get() on the 'configurable' key
+def assistant(state: InawoState, config: RunnableConfig):
     configurable = config.get("configurable", {})
+    # 1. Check if the human has taken over
+    is_manual = configurable.get("is_manual_mode", False)
+    
+    if is_manual:
+        # The AI returns a "None" or empty response to stay silent
+        # This allows the vendor to type freely in Telegram/WhatsApp
+        return {"messages": []} 
+
+    # 2. Otherwise, proceed with the usual AI sales logic
     business_context = configurable.get("business_data", "General Vendor")
+    # ... rest of your AI logic
     
     system_msg = (
         f"You are an AI assistant for {business_name}. Current Status: {is_manual_mode}. If status is True, the owner is currently talking to the customer. Your role shifts to 'Silent Observer'—only provide suggestions if the owner asks you. If status is False, you are the primary 24/7 responder."
