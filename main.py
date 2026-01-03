@@ -157,6 +157,38 @@ async def confirm_sale(sale_id: int, db: Session = Depends(get_db)):
 async def root():
     return {"status": "Inawo SaaS API Online"}
 
+# 1. FETCH ALL ACTIVE CHATS FOR A VENDOR
+@app.get("/vendor/{vendor_id}/chats")
+async def get_active_chats(vendor_id: int, db: Session = Depends(get_db)):
+    chats = db.query(models.ChatSession).filter(models.ChatSession.vendor_id == vendor_id).all()
+    
+    # We return the chat_id and the manual status
+    return [
+        {
+            "chat_id": chat.id,
+            "customer_name": chat.customer_name or "Guest Customer",
+            "is_manual_mode": chat.is_manual_mode
+        } for chat in chats
+    ]
+
+# 2. SEND A MANUAL MESSAGE FROM DASHBOARD TO TELEGRAM
+class AdminMessage(BaseModel):
+    chat_id: str
+    text: str
+
+@app.post("/vendor/send-message")
+async def send_admin_message(payload: AdminMessage):
+    try:
+        # This sends a message directly to the Telegram user via your bot
+        await bot_application.bot.send_message(
+            chat_id=payload.chat_id, 
+            text=f"👨‍💼 (Owner): {payload.text}"
+        )
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- BOT LIFECYCLE ---
 @app.on_event("startup")
 async def startup_event():
