@@ -19,6 +19,8 @@ import models
 from security import hash_password, verify_password, create_access_token
 from dependencies import get_current_vendor # Make sure you created this file!
 from pydantic import BaseModel, EmailStr, Field
+from whatsapp_service import send_whatsapp_message
+from inawo_logic import inawo_app
 
 # Initialize Database Tables
 models.Base.metadata.create_all(bind=engine)
@@ -213,30 +215,36 @@ async def get_vendor_stats(
 
 # --- WEBHOOKS & SYSTEM ---
 
-@app.get("/webhook")
-async def verify_webhook(
-    mode: str = Query(None, alias="hub.mode"),
-    token: str = Query(None, alias="hub.verify_token"),
-    challenge: str = Query(None, alias="hub.challenge")
-):
-    if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
-        return Response(content=challenge, media_type="text/plain")
-    raise HTTPException(status_code=403, detail="Verification failed")
-
-@app.get("/")
-async def root():
-    return {"status": "Inawo SaaS API Online"}
-
-@app.on_event("startup")
-async def startup_event():
-    await asyncio.sleep(2)
+@app.post("/webhook")
+async def handle_whatsapp_webhook(request: Request):
+    data = await request.json()
+    
     try:
-        await bot_application.initialize()
-        asyncio.create_task(bot_application.updater.start_polling())
-        asyncio.create_task(bot_application.start())
-        print("✅ Protected Multi-tenant Bot active")
+        # Check if it's a valid message object
+        if data.get("object") == "whatsapp_business_account":
+            for entry in data.get("entry", []):
+                for change in entry.get("changes", []):
+                    value = change.get("value")
+                    if "messages" in value:
+                        message = value["messages"][0]
+                        sender_number = message["from"]
+                        user_text = message.get("text", {}).get("body", "")
+
+                        # 1. Run the AI Engine
+                        # (You'll pass business context here like we did for Telegram)
+                        inputs = {"messages": [("user", user_text)]}
+                        config = {"configurable": {"thread_id": sender_number}}
+                        
+                        result = await inawo_app.ainvoke(inputs, config)
+                        ai_reply = result["messages"][-1].content
+
+                        # 2. Send the reply back to WhatsApp
+                        await send_whatsapp_message(sender_number, ai_reply)
+
+        return {"status": "success"}
     except Exception as e:
-        print(f"⚠️ Bot error: {e}")
+        print(f"Webhook Processing Error: {e}")
+        return {"status": "error"}
 
 if __name__ == "__main__":
     import uvicorn
