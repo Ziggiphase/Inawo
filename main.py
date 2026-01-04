@@ -111,7 +111,6 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
     except Exception as e:
         print(f"❌ Webhook Logic Error: {e}")
         return {"status": "error"}
-
 # --- OTHER ROUTES ---
 
 @app.get("/")
