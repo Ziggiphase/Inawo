@@ -34,6 +34,11 @@ class VendorSignup(BaseModel):
     password: str = Field(..., min_length=8)
     business_name: str
     phone_number: str
+    # Added these back to prevent 422 errors from Lovable
+    category: str = None
+    bank_name: str = None
+    account_number: str = None
+    account_name: str = None
 
 class InventoryUpdate(BaseModel):
     items: str
@@ -72,9 +77,10 @@ async def verify_webhook(mode: str = Query(None, alias="hub.mode"), token: str =
         return Response(content=challenge, media_type="text/plain")
     return Response(content="Mismatch Error", status_code=403)
 
-@app.post("/webhook")
+app.post("/webhook")
 async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
+    print(f"📩 Incoming WhatsApp Data: {json.dumps(data)}") # LOG FOR DEBUGGING
     try:
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
@@ -84,40 +90,36 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         msg = val["messages"][0]
                         sender = msg["from"]
                         
-                        # 1. AUTO-SESSION LOGIC
+                        # 1. AUTO-SESSION WITH LOGGING
                         session = db.query(models.ChatSession).filter(models.ChatSession.customer_number == sender).first()
                         if not session:
-                            # For testing, we link new customers to the FIRST vendor in the DB
-                            first_vendor = db.query(models.Vendor).first()
-                            if not first_vendor: return {"status": "no_vendors_in_db"}
-                            session = models.ChatSession(customer_number=sender, vendor_id=first_vendor.id)
+                            print(f"🆕 Creating new session for {sender}")
+                            vendor = db.query(models.Vendor).first()
+                            if not vendor: 
+                                print("❌ Error: No vendors in DB to link to.")
+                                return {"status": "no_vendor"}
+                            session = models.ChatSession(customer_number=sender, vendor_id=vendor.id)
                             db.add(session); db.commit()
 
-                        if session.is_ai_paused: return {"status": "paused"}
-                        vendor = db.query(models.Vendor).get(session.vendor_id)
-
-                        # 2. IMAGE HANDLER
-                        if msg.get("type") == "image":
-                            media_id = msg["image"]["id"]
-                            img_bytes = await get_whatsapp_media_bytes(media_id)
-                            receipt = await extract_receipt_details(img_bytes)
-                            if "amount" in receipt:
-                                order = db.query(models.Order).filter(models.Order.customer_number == sender, models.Order.status == "pending").first()
-                                if order:
-                                    order.status = "paid"; db.commit()
-                                    await send_whatsapp_message(sender, f"✅ Payment of ₦{receipt['amount']} verified!")
-                            return {"status": "success"}
-
-                        # 3. TEXT HANDLER
-                        elif msg.get("type") == "text":
+                        # 2. AI REPLY LOGIC
+                        if msg.get("type") == "text":
                             text = msg["text"]["body"]
+                            vendor = db.query(models.Vendor).get(session.vendor_id)
+                            
+                            print(f"🤖 AI thinking for {vendor.business_name}...")
                             prompt = f"Concise AI for {vendor.business_name}. {vendor.knowledge_base_text}. Max 2 sentences."
-                            result = await inawo_app.ainvoke({"messages": [("system", prompt), ("user", text)]}, {"configurable": {"thread_id": sender}})
-                            reply = result["messages"][-1].content
-                            await send_whatsapp_message(sender, reply)
+                            
+                            try:
+                                result = await inawo_app.ainvoke({"messages": [("system", prompt), ("user", text)]}, {"configurable": {"thread_id": sender}})
+                                reply = result["messages"][-1].content
+                                print(f"📤 Sending WhatsApp reply: {reply}")
+                                await send_whatsapp_message(sender, reply)
+                            except Exception as ai_err:
+                                print(f"❌ AI/WhatsApp API Error: {ai_err}")
+
         return {"status": "success"}
     except Exception as e:
-        print(f"Webhook error: {e}")
+        print(f"❌ Webhook Logic Crash: {e}")
         return {"status": "error"}
 
 # --- STARTUP ---
