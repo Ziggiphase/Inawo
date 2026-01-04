@@ -28,18 +28,37 @@ from inawo_bot import bot_application
 app = FastAPI(title="Inawo AI SaaS Backend")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# --- SCHEMAS ---
+class VendorSignup(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    business_name: str
+    phone_number: str
+
 class InventoryUpdate(BaseModel):
     items: str
 
+# --- ROOT ROUTE (Fixes Render 404) ---
+@app.get("/")
+async def root():
+    return {
+        "status": "Inawo API is active",
+        "version": "1.0.0",
+        "engine": "Llama 3.3 70B",
+        "timestamp": datetime.now(timezone.utc)
+    }
+
 # --- HELPER: VENDOR ALERTS ---
 async def notify_vendor(vendor_id: int, message: str, db: Session):
+    """Sends a Telegram alert to the vendor if they have a chat_id set."""
     vendor = db.query(models.Vendor).get(vendor_id)
     if vendor and vendor.telegram_chat_id and bot_application:
         try:
             await bot_application.bot.send_message(chat_id=vendor.telegram_chat_id, text=f"🔔 INAWO ALERT:\n{message}")
-        except: pass
+        except Exception as e:
+            print(f"⚠️ Failed to notify vendor: {e}")
 
-# --- NEW: BACKGROUND REMINDER TASK ---
+# --- BACKGROUND REMINDER TASK ---
 async def start_reminder_loop():
     """Checks for unpaid orders every 2 hours and nudges customers."""
     while True:
@@ -47,7 +66,6 @@ async def start_reminder_loop():
         from database import SessionLocal
         db = SessionLocal()
         try:
-            # Find pending orders older than 2 hours but younger than 24 hours
             time_threshold = datetime.now(timezone.utc) - timedelta(hours=2)
             unpaid_orders = db.query(models.Order).filter(
                 models.Order.status == "pending",
@@ -64,6 +82,12 @@ async def start_reminder_loop():
             db.close()
 
 # --- WHATSAPP WEBHOOK ---
+@app.get("/webhook")
+async def verify_webhook(mode: str = Query(None, alias="hub.mode"), token: str = Query(None, alias="hub.verify_token"), challenge: str = Query(None, alias="hub.challenge")):
+    if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
+        return Response(content=challenge, media_type="text/plain")
+    return Response(content="Mismatch Error", status_code=403)
+
 @app.post("/webhook")
 async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
@@ -90,7 +114,7 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                                 if order and abs(order.amount - amt) < 1.0:
                                     order.status = "paid"
                                     db.commit()
-                                    await send_whatsapp_message(sender, f"✅ Payment of ₦{amt} verified! Your order is being processed.")
+                                    await send_whatsapp_message(sender, f"✅ Payment of ₦{amt} verified!")
                                     await notify_vendor(vendor.id, f"💰 PAID: Order from {sender} (₦{amt})", db)
                             return {"status": "success"}
 
@@ -130,14 +154,40 @@ async def get_stats(db: Session = Depends(get_db), curr: models.Vendor = Depends
     results = db.query(cast(models.Order.created_at, Date).label("day"), func.sum(models.Order.amount).label("total")).filter(models.Order.vendor_id == curr.id).group_by(cast(models.Order.created_at, Date)).all()
     return [{"day": str(r.day), "total": r.total} for r in results]
 
-# --- STARTUP WITH BACKGROUND TASKS ---
+@app.get("/vendor/orders")
+async def get_orders(db: Session = Depends(get_db), curr: models.Vendor = Depends(get_current_vendor)):
+    return db.query(models.Order).filter(models.Order.vendor_id == curr.id).order_by(models.Order.created_at.desc()).all()
+
+@app.get("/vendor/telegram-link")
+async def get_tg_link(curr: models.Vendor = Depends(get_current_vendor)):
+    return {"link": f"https://t.me/Inawo_Bot?start=v_{curr.id}"}
+
+@app.post("/upload-knowledge")
+async def upload_kb(file: UploadFile = File(...), db: Session = Depends(get_db), curr: models.Vendor = Depends(get_current_vendor)):
+    if file.filename.lower().endswith(".pdf"):
+        with pdfplumber.open(file.file) as pdf:
+            curr.knowledge_base_text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+            db.commit()
+            return {"status": "success"}
+    raise HTTPException(status_code=400, detail="Only PDFs supported currently")
+
+# --- AUTH ---
+@app.post("/signup")
+async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
+    db.add(models.Vendor(email=vendor.email, business_name=vendor.business_name, password_hash=hash_password(vendor.password)))
+    db.commit(); return {"status": "success"}
+
+@app.post("/login")
+async def login(v: VendorSignup, db: Session = Depends(get_db)):
+    user = db.query(models.Vendor).filter(models.Vendor.email == v.email).first()
+    if not user or not verify_password(v.password, user.password_hash): raise HTTPException(status_code=401)
+    return {"access_token": create_access_token(data={"sub": user.email, "id": user.id})}
+
+# --- STARTUP ---
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Inawo API Starting...")
-    # 1. Start Reminder Loop
     asyncio.create_task(start_reminder_loop())
-    
-    # 2. Start Telegram Bot
     await asyncio.sleep(15)
     if bot_application:
         try:
