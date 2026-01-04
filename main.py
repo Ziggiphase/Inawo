@@ -132,6 +132,51 @@ async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+
+@app.post("/upload-knowledge")
+async def upload_knowledge(
+    file: UploadFile = File(...), 
+    db: Session = Depends(get_db),
+    current_vendor: models.Vendor = Depends(get_current_vendor) # Securely identifies the logged-in vendor
+):
+    text_content = ""
+    filename = file.filename.lower()
+
+    try:
+        # 1. Handle PDF Files
+        if filename.endswith(".pdf"):
+            with pdfplumber.open(file.file) as pdf:
+                text_content = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+
+        # 2. Handle Excel/CSV Files
+        elif filename.endswith((".xlsx", ".csv")):
+            df = pd.read_excel(file.file) if filename.endswith(".xlsx") else pd.read_csv(file.file)
+            text_content = df.to_string()
+
+        # 3. Handle Plain Text
+        elif filename.endswith(".txt"):
+            text_content = (await file.read()).decode("utf-8")
+
+        if not text_content:
+            raise HTTPException(status_code=400, detail="Could not extract text from file.")
+
+        # 4. Save to Database
+        current_vendor.knowledge_base_text = text_content
+        db.add(current_vendor)
+        db.commit()
+
+        return {
+            "status": "success", 
+            "message": f"Knowledge base updated for {current_vendor.business_name}",
+            "char_count": len(text_content)
+        }
+
+    except Exception as e:
+        print(f"❌ Upload Error: {e}")
+        raise HTTPException(status_code=500, detail="Error processing file.")
+
+
+
 @app.post("/login")
 async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
     db_vendor = db.query(models.Vendor).filter(models.Vendor.email == vendor.email).first()
