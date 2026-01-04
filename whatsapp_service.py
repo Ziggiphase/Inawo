@@ -25,6 +25,27 @@ async def send_whatsapp_message(to_number: str, message_text: str):
         "text": {"body": message_text},
     }
 
+async def get_whatsapp_media_bytes(media_id: str):
+    """Fetches and downloads media from Meta's servers."""
+    url = f"https://graph.facebook.com/{VERSION}/{media_id}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+
+    async with httpx.AsyncClient() as client:
+        # Step 1: Get the download URL
+        response = await client.get(url, headers=headers)
+        if response.status_code != 200:
+            return None
+        
+        media_url = response.json().get("url")
+        
+        # Step 2: Download the actual bytes
+        media_response = await client.get(media_url, headers=headers)
+        if media_response.status_code == 200:
+            return media_response.content
+    return None
+
+    
+
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json=payload, headers=headers)
         if response.status_code != 200:
