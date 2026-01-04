@@ -15,7 +15,7 @@ class Vendor(Base):
     # Professional Profile & Inventory
     category = Column(String(50)) 
     business_address = Column(String(255))
-    out_of_stock_items = Column(Text, nullable=True) # New: Stored as comma-separated text
+    out_of_stock_items = Column(Text, nullable=True) 
     knowledge_base_text = Column(Text, nullable=True)
     
     # Notification & Identity
@@ -25,6 +25,7 @@ class Vendor(Base):
     # Relationships
     orders = relationship("Order", back_populates="vendor")
     messages = relationship("ChatMessage", back_populates="vendor")
+    sales = relationship("Sale", back_populates="vendor") # Added this link back
 
 class ChatSession(Base):
     __tablename__ = 'chat_sessions'
@@ -57,7 +58,19 @@ class Order(Base):
     customer_number = Column(String(20))
     items = Column(Text)
     amount = Column(Float)
-    status = Column(String(20), default="pending") # pending, paid
+    status = Column(String(20), default="pending") 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     vendor = relationship("Vendor", back_populates="orders")
+
+class Sale(Base):
+    __tablename__ = 'sales'
+    id = Column(Integer, primary_key=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'))
+    amount = Column(Float)
+    customer_name = Column(String(100))
+    receipt_url = Column(String(255), nullable=True) 
+    status = Column(String(20), default="Pending")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    vendor = relationship("Vendor", back_populates="sales")
