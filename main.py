@@ -48,6 +48,17 @@ class VendorSignup(BaseModel):
     account_number: str = Field(..., min_length=10, max_length=10)
     account_name: str
 
+# --- HELPER: VENDOR NOTIFICATIONS ---
+async def notify_vendor(vendor_id: int, message: str, db: Session):
+    """Sends a Telegram alert to the vendor if they have a chat_id set."""
+    vendor = db.query(models.Vendor).get(vendor_id)
+    if vendor and vendor.telegram_chat_id:
+        try:
+            # We use the existing bot instance to send the alert
+            await bot_application.bot.send_message(chat_id=vendor.telegram_chat_id, text=f"🔔 INAWO ALERT:\n{message}")
+        except Exception as e:
+            print(f"⚠️ Failed to notify vendor: {e}")
+
 # --- WHATSAPP WEBHOOK ---
 
 @app.get("/webhook")
@@ -75,28 +86,34 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         sender_number = message["from"]
                         user_text = message.get("text", {}).get("body", "")
 
-                        # 1. VENDOR LOOKUP
+                        # 1. SESSION & HUMAN TAKE-OVER CHECK
                         session_record = db.query(models.ChatSession).filter(
                             models.ChatSession.customer_number == sender_number
                         ).first()
-                        vendor = db.query(models.Vendor).get(session_record.vendor_id) if session_record else None
                         
-                        biz_name = vendor.business_name if vendor else "Inawo"
-                        kb_text = vendor.knowledge_base_text if vendor else "A helpful business assistant."
+                        if not session_record:
+                            return {"status": "ignored", "reason": "no_active_vendor_link"}
 
+                        # If vendor has paused the AI for this customer, we do nothing
+                        if session_record.is_ai_paused:
+                            print(f"⏸ AI Paused for {sender_number}. Human is in control.")
+                            return {"status": "success", "info": "ai_paused"}
+
+                        vendor = db.query(models.Vendor).get(session_record.vendor_id)
+                        
                         # 2. LOG CUSTOMER MESSAGE
-                        if vendor:
-                            db.add(models.ChatMessage(vendor_id=vendor.id, sender=sender_number, content=user_text, role="user"))
+                        db.add(models.ChatMessage(vendor_id=vendor.id, sender=sender_number, content=user_text, role="user"))
 
-                        # 3. SMART & CONCISE AI GENERATION
+                        # 3. AI GENERATION (SMART, CONCISE, AND PROFILE-AWARE)
                         system_prompt = f"""
-                        You are the concise AI Sales Assistant for {biz_name}. 
-                        IDENTITY/PRICES: {kb_text}
+                        You are the concise AI Sales Assistant for {vendor.business_name}. 
+                        IDENTITY/PRICES: {vendor.knowledge_base_text}
+                        OUT OF STOCK: {vendor.out_of_stock_items or 'None'}
                         
-                        RULES:
-                        - Be professional and smart. 
-                        - Max 2 sentences. Use friendly Nigerian business English.
-                        - If they want to buy, confirm the order clearly and briefly.
+                        YOUR GOAL:
+                        - Max 2 sentences. Use smart, friendly Nigerian business English.
+                        - If the customer provides their name or address, acknowledge it briefly.
+                        - If they ask for something OUT OF STOCK, politely suggest an alternative.
                         """
                         
                         inputs = {"messages": [("system", system_prompt), ("user", user_text)]}
@@ -104,42 +121,59 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         ai_reply = result["messages"][-1].content
 
                         # 4. LOG AI REPLY & SEND
-                        if vendor:
-                            db.add(models.ChatMessage(vendor_id=vendor.id, sender="AI", content=ai_reply, role="assistant"))
-                            db.commit()
-
+                        db.add(models.ChatMessage(vendor_id=vendor.id, sender="AI", content=ai_reply, role="assistant"))
+                        db.commit()
                         await send_whatsapp_message(sender_number, ai_reply)
 
-                        # 5. AUTONOMOUS ORDER EXTRACTION (Background)
-                        if vendor:
-                            order_prompt = f"Extract order info from: '{user_text}'. Return ONLY JSON: {{\"item\": string, \"qty\": int, \"total\": float}} or 'null'."
-                            order_check = await inawo_app.ainvoke([("system", order_prompt)])
-                            raw_order = order_check["messages"][-1].content
+                        # 5. DATA EXTRACTION (ADDRESS, NAME, ORDERS)
+                        extraction_prompt = f"""
+                        Extract data from: '{user_text}'. 
+                        Return ONLY JSON: {{"item": str, "total": float, "name": str, "address": str}}
+                        If info is missing, use null.
+                        """
+                        ext_result = await inawo_app.ainvoke([("system", extraction_prompt)])
+                        raw_ext = ext_result["messages"][-1].content
+                        
+                        try:
+                            ext_data = json.loads(raw_ext)
+                            # Update Profile
+                            if ext_data.get("name"): session_record.customer_name = ext_data["name"]
+                            if ext_data.get("address"): session_record.delivery_address = ext_data["address"]
                             
-                            if "item" in raw_order and "null" not in raw_order:
-                                try:
-                                    order_json = json.loads(raw_order)
-                                    db.add(models.Order(
-                                        vendor_id=vendor.id,
-                                        customer_number=sender_number,
-                                        items=order_json['item'],
-                                        amount=order_json.get('total', 0),
-                                        status="pending"
-                                    ))
-                                    db.commit()
-                                except: pass
+                            # Log Order
+                            if ext_data.get("item"):
+                                new_order = models.Order(
+                                    vendor_id=vendor.id,
+                                    customer_number=sender_number,
+                                    items=ext_data['item'],
+                                    amount=ext_data.get('total', 0),
+                                    status="pending"
+                                )
+                                db.add(new_order)
+                                await notify_vendor(vendor.id, f"📦 NEW ORDER: {ext_data['item']} from {sender_number}", db)
+                            
+                            db.commit()
+                        except: pass
 
         return {"status": "success"}
     except Exception as e:
         print(f"❌ Webhook Error: {e}")
         return {"status": "error"}
 
-# --- VENDOR ROUTES ---
+# --- VENDOR MANAGEMENT ROUTES ---
 
 @app.get("/vendor/orders")
 async def get_vendor_orders(db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
-    orders = db.query(models.Order).filter(models.Order.vendor_id == current_vendor.id).order_by(models.Order.created_at.desc()).all()
-    return orders
+    return db.query(models.Order).filter(models.Order.vendor_id == current_vendor.id).order_by(models.Order.created_at.desc()).all()
+
+@app.post("/vendor/pause-ai")
+async def toggle_ai(customer_number: str, pause: bool, db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
+    session = db.query(models.ChatSession).filter(models.ChatSession.vendor_id == current_vendor.id, models.ChatSession.customer_number == customer_number).first()
+    if session:
+        session.is_ai_paused = pause
+        db.commit()
+        return {"status": "success", "ai_active": not pause}
+    raise HTTPException(status_code=404, detail="Session not found")
 
 @app.post("/upload-knowledge")
 async def upload_knowledge(file: UploadFile = File(...), db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
@@ -166,7 +200,7 @@ async def get_vendor_chats(db: Session = Depends(get_db), current_vendor: models
              .group_by(models.ChatMessage.sender).all()
     return [{"customer": c.sender, "time": c.last_msg} for c in chats]
 
-# --- LIFECYCLE & AUTH ---
+# --- LIFECYCLE ---
 
 @app.on_event("startup")
 async def startup_event():
@@ -177,7 +211,7 @@ async def startup_event():
             await bot_application.initialize()
             asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
             asyncio.create_task(bot_application.start())
-            print("✅ Telegram Bot Active")
+            print("✅ Telegram Bot Active for Notifications")
         except Exception as e: print(f"⚠️ Telegram conflict: {e}")
 
 @app.post("/signup")
