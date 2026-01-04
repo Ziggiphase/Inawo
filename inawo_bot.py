@@ -81,7 +81,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Log to Database
     db = next(get_db())
     # Link to vendor from session
-    session = db.query(ChatSession).filter(ChatSession.id = str(update.message.chat_id)).first()
+    session = db.query(ChatSession).filter(ChatSession.id == str(update.message.chat_id)).first()
     
     new_sale = Sale(
         amount=float(receipt_data.get('amount', 0)),
