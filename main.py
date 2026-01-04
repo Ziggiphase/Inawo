@@ -57,23 +57,22 @@ class AdminMessage(BaseModel):
 # --- WHATSAPP HANDSHAKE (THE FIX) ---
 
 @app.get("/webhook")
-@app.get("/webhook/") # This handles the trailing slash issue
+@app.get("/webhook/")
 async def verify_webhook(
     mode: str = Query(None, alias="hub.mode"),
     token: str = Query(None, alias="hub.verify_token"),
     challenge: str = Query(None, alias="hub.challenge")
 ):
+    # This grabs it from Render's Env Variables
     verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN")
     
-    # Debugging logs in Render
-    print(f"WEBHOOK_DEBUG: Received mode={mode}, token={token}")
-    
+    # This log will tell you EXACTLY what is being compared
+    print(f"DEBUG: Comparing Received Token '{token}' with Expected Token '{verify_token}'")
+
     if mode == "subscribe" and token == verify_token:
-        print("WEBHOOK_DEBUG: Verification Successful!")
         return Response(content=challenge, media_type="text/plain")
     
-    print("WEBHOOK_DEBUG: Verification Failed. Token mismatch.")
-    return Response(content="Verification failed", status_code=403)
+    return Response(content="Mismatch Error", status_code=403)
 
 @app.post("/webhook")
 @app.post("/webhook/")
