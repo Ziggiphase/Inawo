@@ -8,7 +8,7 @@ import pdfplumber
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, cast, Date # Added Date for grouping
 from database import get_db, engine
 import models
 from security import hash_password, verify_password, create_access_token
@@ -58,16 +58,14 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         sender = msg["from"]
                         text = msg.get("text", {}).get("body", "")
 
-                        # 1. SESSION & TAKE-OVER CHECK
                         session = db.query(models.ChatSession).filter(models.ChatSession.customer_number == sender).first()
                         if not session: return {"status": "ignored"}
                         if session.is_ai_paused: return {"status": "human_mode"}
 
                         vendor = db.query(models.Vendor).get(session.vendor_id)
-
-                        # 2. LOG & AI REPLY (Concise)
                         db.add(models.ChatMessage(vendor_id=vendor.id, sender=sender, content=text, role="user"))
-                        prompt = f"You are the concise AI for {vendor.business_name}. Context: {vendor.knowledge_base_text}. Out of stock: {vendor.out_of_stock_items}. Max 2 sentences."
+                        
+                        prompt = f"You are the concise AI for {vendor.business_name}. Context: {vendor.knowledge_base_text}. Max 2 sentences."
                         result = await inawo_app.ainvoke({"messages": [("system", prompt), ("user", text)]}, {"configurable": {"thread_id": sender}})
                         reply = result["messages"][-1].content
                         
@@ -75,37 +73,54 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         db.commit()
                         await send_whatsapp_message(sender, reply)
 
-                        # 3. EXTRACTION (Name, Address, Order)
-                        extract_p = f"Extract from: '{text}'. Return ONLY JSON: {{\"item\": str, \"total\": float, \"name\": str, \"address\": str}} or null."
+                        extract_p = f"Extract order info from: '{text}'. Return ONLY JSON: {{\"item\": str, \"total\": float}} or null."
                         ext = await inawo_app.ainvoke([("system", extract_p)])
                         try:
                             ext_data = json.loads(ext["messages"][-1].content)
-                            if ext_data.get("name"): session.customer_name = ext_data["name"]
-                            if ext_data.get("address"): session.delivery_address = ext_data["address"]
                             if ext_data.get("item"):
                                 db.add(models.Order(vendor_id=vendor.id, customer_number=sender, items=ext_data['item'], amount=ext_data.get('total', 0)))
-                                await notify_vendor(vendor.id, f"📦 NEW ORDER: {ext_data['item']} from {sender}", db)
+                                await notify_vendor(vendor.id, f"📦 NEW ORDER: {ext_data['item']} (₦{ext_data.get('total', 0)})", db)
                             db.commit()
                         except: pass
         return {"status": "success"}
     except Exception as e: return {"status": "error", "detail": str(e)}
 
-# --- DASHBOARD ROUTES ---
+# --- NEW: SALES ANALYTICS ROUTE ---
+@app.get("/vendor/stats")
+async def get_vendor_stats(db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
+    """Returns daily revenue data for the vendor's dashboard chart."""
+    # We group orders by date and sum the amounts
+    results = db.query(
+        cast(models.Order.created_at, Date).label("day"),
+        func.sum(models.Order.amount).label("total")
+    ).filter(models.Order.vendor_id == current_vendor.id)\
+     .group_by(cast(models.Order.created_at, Date))\
+     .order_by("day").all()
+
+    return [{"day": str(r.day), "total": r.total} for r in results]
+
+# --- OTHER ROUTES ---
+
+@app.get("/vendor/orders")
+async def get_orders(db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
+    return db.query(models.Order).filter(models.Order.vendor_id == current_vendor.id).order_by(models.Order.created_at.desc()).all()
+
 @app.get("/vendor/telegram-link")
 async def get_tg_link(curr: models.Vendor = Depends(get_current_vendor)):
     return {"link": f"https://t.me/Inawo_Bot?start=v_{curr.id}"}
 
-@app.post("/vendor/pause-ai")
-async def toggle_ai(customer: str, pause: bool, db: Session = Depends(get_db), curr: models.Vendor = Depends(get_current_vendor)):
-    s = db.query(models.ChatSession).filter(models.ChatSession.vendor_id == curr.id, models.ChatSession.customer_number == customer).first()
-    if s: s.is_ai_paused = pause; db.commit(); return {"status": "success"}
-    raise HTTPException(status_code=404)
+@app.post("/upload-knowledge")
+async def upload_knowledge(file: UploadFile = File(...), db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
+    text_content = ""
+    try:
+        if file.filename.lower().endswith(".pdf"):
+            with pdfplumber.open(file.file) as pdf:
+                text_content = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+        current_vendor.knowledge_base_text = text_content
+        db.commit()
+        return {"status": "success"}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/vendor/orders")
-async def get_orders(db: Session = Depends(get_db), curr: models.Vendor = Depends(get_current_vendor)):
-    return db.query(models.Order).filter(models.Order.vendor_id == curr.id).all()
-
-# ... (Auth & Upload routes remain the same as previous main.py) ...
 @app.post("/signup")
 async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
     new_v = models.Vendor(email=vendor.email, business_name=vendor.business_name, password_hash=hash_password(vendor.password))
@@ -125,7 +140,10 @@ async def startup_event():
             await bot_application.initialize()
             asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
             asyncio.create_task(bot_application.start())
-        except Exception as e: print(f"Bot startup fail: {e}")
+        except: pass
+
+@app.get("/")
+async def root(): return {"status": "running"}
 
 if __name__ == "__main__":
     import uvicorn
