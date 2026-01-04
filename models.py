@@ -27,6 +27,7 @@ class Vendor(Base):
     # Relationships
     knowledge_base = relationship("KnowledgeBase", back_populates="vendor", uselist=False)
     sales = relationship("Sale", back_populates="vendor")
+    knowledge_base_text = Column(Text, nullable=True)
 
 class KnowledgeBase(Base):
     __tablename__ = 'knowledge_bases'
