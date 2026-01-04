@@ -133,24 +133,28 @@ async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
 
 @app.on_event("startup")
 async def startup_event():
-    # 1. API always stays online for WhatsApp
-    print("🚀 API Server is running and stable.")
+    # 1. Prioritize API availability
+    print("🚀 Inawo API is active and ready for WhatsApp.")
     
-    # 2. Give old Render processes 10 seconds to finish shutting down
-    await asyncio.sleep(10)
+    # 2. Wait 15 seconds to let old Render 'ghost' processes die off
+    # This is the secret to avoiding the Telegram 'Conflict' error
+    await asyncio.sleep(15)
     
     if bot_application:
         try:
             # 3. Initialize the bot
             await bot_application.initialize()
             
-            # Start polling in a background task so it doesn't block the API
+            # Start polling in a background task so it doesn't block the API thread
+            # 'drop_pending_updates=True' prevents the bot from spamming you with 
+            # old messages that were sent while the bot was paused.
             asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
             asyncio.create_task(bot_application.start())
-            print("✅ Telegram Bot is back online in the background!")
+            
+            print("✅ Telegram Bot is back online and safe!")
         except Exception as e:
-            # Log the error but keep the server running
-            print(f"⚠️ Telegram Startup Note: {e}")
+            # If a conflict STILL happens, we catch it here so the API stays online
+            print(f"⚠️ Telegram Startup Note (API is still running): {e}")
 
 if __name__ == "__main__":
     import uvicorn
