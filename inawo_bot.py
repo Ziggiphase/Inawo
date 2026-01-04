@@ -4,24 +4,34 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 from inawo_logic import inawo_app 
 from vision_service import extract_receipt_details 
-from database import get_db
+from database import SessionLocal # Use SessionLocal for direct DB access
 from models import Sale, ChatSession, Vendor
 
-# --- 1. START COMMAND (Deep Linking) ---
+# --- 1. START COMMAND (Updated with Deep Linking) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat_id)
-    args = context.args
-    db = next(get_db())
+    args = context.args # Gets the 'v_123' from the link
+    db = SessionLocal()
 
-    if args:
-        try:
+    try:
+        # Check if this is a Vendor linking their account
+        if args and args[0].startswith("v_"):
+            vendor_id = int(args[0].split("_")[1])
+            vendor = db.query(Vendor).get(vendor_id)
+            if vendor:
+                vendor.telegram_chat_id = chat_id
+                db.commit()
+                await update.message.reply_text(f"✅ Linked! You will now receive instant order alerts for {vendor.business_name}.")
+                return
+            
+        # Standard Customer Start
+        elif args:
             vendor_id = int(args[0])
             vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
-            
             if vendor:
-                session = db.query(ChatSession).filter(ChatSession.id == chat_id).first()
+                session = db.query(ChatSession).filter(ChatSession.customer_number == chat_id).first()
                 if not session:
-                    session = ChatSession(id=chat_id, vendor_id=vendor_id)
+                    session = ChatSession(customer_number=chat_id, vendor_id=vendor_id)
                     db.add(session)
                 else:
                     session.vendor_id = vendor_id
@@ -32,73 +42,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "I am their AI assistant. How can I help you today?"
                 )
                 return
-        except ValueError:
-            pass
+    except Exception as e:
+        print(f"Bot Start Error: {e}")
+    finally:
+        db.close()
 
-    await update.message.reply_text("Welcome to Inawo! Please use a vendor's link to start shopping.")
+    await update.message.reply_text("Welcome to Inawo! Please use your vendor's link to start shopping.")
 
-# --- 2. TEXT MESSAGE HANDLER ---
+# --- 2. TEXT MESSAGE HANDLER (Concise logic) ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     chat_id = str(update.message.chat_id)
+    db = SessionLocal()
     
-    # Get vendor info from DB based on session
-    db = next(get_db())
-    session = db.query(ChatSession).filter(ChatSession.id == chat_id).first()
-    
-    biz_name = "Inawo Vendor"
-    biz_info = "Assistant active."
-    
-    if session:
-        vendor = db.query(Vendor).filter(Vendor.id == session.vendor_id).first()
-        if vendor:
-            biz_name = vendor.business_name
-            biz_info = vendor.knowledge_base.content if vendor.knowledge_base else "No catalog uploaded."
+    try:
+        session = db.query(ChatSession).filter(ChatSession.customer_number == chat_id).first()
+        if session and session.is_ai_paused:
+            return # Silent if vendor took over
 
-    config = {
-        "configurable": {
-            "thread_id": chat_id,
-            "business_data": f"Business: {biz_name}. Catalog: {biz_info}"
-        }
-    }
+        vendor = db.query(Vendor).get(session.vendor_id) if session else None
+        biz_name = vendor.business_name if vendor else "Inawo Vendor"
+        kb = vendor.knowledge_base_text if vendor else "Assistant active."
 
-    inputs = {"messages": [("user", user_text)]}
-    result = await inawo_app.ainvoke(inputs, config)
-    await update.message.reply_text(result["messages"][-1].content)
+        system_prompt = f"You are a concise assistant for {biz_name}. Use: {kb}. Max 2 sentences."
+        inputs = {"messages": [("system", system_prompt), ("user", user_text)]}
+        result = await inawo_app.ainvoke(inputs, {"configurable": {"thread_id": chat_id}})
+        
+        await update.message.reply_text(result["messages"][-1].content)
+    finally:
+        db.close()
 
 # --- 3. PHOTO HANDLER ---
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
     image_bytes = await photo_file.download_as_bytearray()
+    await update.message.reply_text("Analyzing receipt... 🧐")
     
-    await update.message.reply_text("I see a receipt! Analyzing... 🧐")
     receipt_data = await extract_receipt_details(bytes(image_bytes))
-    
     if "error" in receipt_data:
-        await update.message.reply_text("I couldn't read that clearly. Can you send a sharper photo?")
+        await update.message.reply_text("I couldn't read that. Try a sharper photo!")
         return
 
-    # Log to Database
-    db = next(get_db())
-    # Link to vendor from session
-    session = db.query(ChatSession).filter(ChatSession.id == str(update.message.chat_id)).first()
-    
-    new_sale = Sale(
-        amount=float(receipt_data.get('amount', 0)),
-        customer_name=update.message.from_user.full_name,
-        vendor_id=session.vendor_id if session else None,
-        status="Pending"
-    )
-    db.add(new_sale)
-    db.commit()
-
-    await update.message.reply_text(f"✅ Found it! ₦{receipt_data.get('amount')}. Sent to vendor.")
+    db = SessionLocal()
+    try:
+        session = db.query(ChatSession).filter(ChatSession.customer_number == str(update.message.chat_id)).first()
+        new_sale = Sale(
+            amount=float(receipt_data.get('amount', 0)),
+            customer_name=update.message.from_user.full_name,
+            vendor_id=session.vendor_id if session else None,
+            status="Pending"
+        )
+        db.add(new_sale)
+        db.commit()
+        await update.message.reply_text(f"✅ Receipt logged: ₦{receipt_data.get('amount')}.")
+    finally:
+        db.close()
 
 # --- 4. INITIALIZATION ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-
 if not TOKEN:
-    print("⚠️ WARNING: TELEGRAM_TOKEN not found. Bot will not start.")
     bot_application = None
 else:
     bot_application = ApplicationBuilder().token(TOKEN).build()
