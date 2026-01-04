@@ -149,17 +149,22 @@ async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
     return {"access_token": token, "business_name": db_vendor.business_name}
 
 # --- STARTUP ---
+# --- BOT LIFECYCLE ---
 @app.on_event("startup")
 async def startup_event():
-    await asyncio.sleep(2)
+    # Small delay to let old Render processes die
+    await asyncio.sleep(5) 
+    
     if bot_application:
         try:
+            # We initialize but DON'T let an error here crash the whole FastAPI app
             await bot_application.initialize()
             asyncio.create_task(bot_application.updater.start_polling())
             asyncio.create_task(bot_application.start())
-            print("✅ Multi-tenant System Online")
+            print("✅ Multi-tenant Bot active")
         except Exception as e:
-            print(f"⚠️ Bot error: {e}")
+            # This is the key: if Telegram fails, we just log it and keep the API alive
+            print(f"⚠️ Telegram Bot could not start (likely Conflict), but API is STAYING ONLINE: {e}")
 
 if __name__ == "__main__":
     import uvicorn
