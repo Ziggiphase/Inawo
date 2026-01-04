@@ -67,10 +67,10 @@ async def verify_webhook(
     return Response(content="Mismatch Error", status_code=403)
 
 @app.post("/webhook")
-@app.post("/webhook/")
 async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
     try:
+        # 1. Standard WhatsApp Parsing
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
                 for change in entry.get("changes", []):
@@ -78,25 +78,38 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                     if "messages" in value:
                         message = value["messages"][0]
                         sender_number = message["from"]
+                        user_text = message.get("text", {}).get("body", "")
 
-                        if message.get("type") == "image":
-                            media_id = message["image"]["id"]
-                            image_bytes = await get_whatsapp_media_bytes(media_id)
-                            if image_bytes:
-                                receipt_data = await extract_receipt_details(image_bytes)
-                                confirmation = f"✅ Received! ₦{receipt_data.get('amount')}"
-                                await send_whatsapp_message(sender_number, confirmation)
+                        # 2. VENDOR LOOKUP (The Multitenant Secret)
+                        # We find which vendor this customer is chatting with
+                        # (This assumes you have a ChatSession table linking users to vendors)
+                        vendor = db.query(models.Vendor).join(models.ChatSession).filter(
+                            models.ChatSession.customer_number == sender_number
+                        ).first()
 
-                        elif message.get("type") == "text":
-                            user_text = message["text"]["body"]
-                            inputs = {"messages": [("user", user_text)]}
-                            config = {"configurable": {"thread_id": sender_number}}
-                            result = await inawo_app.ainvoke(inputs, config)
-                            await send_whatsapp_message(sender_number, result["messages"][-1].content)
+                        if not vendor:
+                            # Fallback if it's a new customer
+                            business_context = "A helpful business assistant."
+                        else:
+                            # Pull the specific knowledge base for this vendor
+                            business_context = vendor.knowledge_base_text 
+
+                        # 3. FEED CONTEXT TO AI
+                        # We 'prime' the AI with the vendor's specific identity
+                        system_prompt = f"You are the AI assistant for {vendor.business_name if vendor else 'Inawo'}. Use this info: {business_context}"
+                        
+                        inputs = {"messages": [("system", system_prompt), ("user", user_text)]}
+                        config = {"configurable": {"thread_id": sender_number}}
+                        
+                        result = await inawo_app.ainvoke(inputs, config)
+                        ai_reply = result["messages"][-1].content
+
+                        # 4. SEND REPLY
+                        await send_whatsapp_message(sender_number, ai_reply)
 
         return {"status": "success"}
     except Exception as e:
-        print(f"Webhook Error: {e}")
+        print(f"❌ Webhook Logic Error: {e}")
         return {"status": "error"}
 
 # --- OTHER ROUTES ---
