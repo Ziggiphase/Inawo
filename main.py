@@ -24,8 +24,6 @@ from pydantic import BaseModel, EmailStr, Field
 from whatsapp_service import send_whatsapp_message, get_whatsapp_media_bytes
 from vision_service import extract_receipt_details
 from inawo_logic import inawo_app
-# Import auth_routes if you want to use it, but for now we keep them in main to avoid 404s
-# from auth_routes import router as auth_router 
 
 models.Base.metadata.create_all(bind=engine)
 from inawo_bot import bot_application
@@ -50,11 +48,7 @@ class VendorSignup(BaseModel):
     account_number: str = Field(..., min_length=10, max_length=10)
     account_name: str
 
-class AdminMessage(BaseModel):
-    chat_id: str
-    text: str
-
-# --- WHATSAPP HANDSHAKE (THE FIX) ---
+# --- WHATSAPP HANDSHAKE ---
 
 @app.get("/webhook")
 @app.get("/webhook/")
@@ -63,10 +57,8 @@ async def verify_webhook(
     token: str = Query(None, alias="hub.verify_token"),
     challenge: str = Query(None, alias="hub.challenge")
 ):
-    # This grabs it from Render's Env Variables
     verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN")
     
-    # This log will tell you EXACTLY what is being compared
     print(f"DEBUG: Comparing Received Token '{token}' with Expected Token '{verify_token}'")
 
     if mode == "subscribe" and token == verify_token:
@@ -89,11 +81,10 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
 
                         if message.get("type") == "image":
                             media_id = message["image"]["id"]
-                            await send_whatsapp_message(sender_number, "Receipt received! Analyzing... 🧐")
                             image_bytes = await get_whatsapp_media_bytes(media_id)
                             if image_bytes:
                                 receipt_data = await extract_receipt_details(image_bytes)
-                                confirmation = f"✅ Analysis Complete!\nAmount: ₦{receipt_data.get('amount')}\nBank: {receipt_data.get('bank')}"
+                                confirmation = f"✅ Received! ₦{receipt_data.get('amount')}"
                                 await send_whatsapp_message(sender_number, confirmation)
 
                         elif message.get("type") == "text":
@@ -101,8 +92,7 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                             inputs = {"messages": [("user", user_text)]}
                             config = {"configurable": {"thread_id": sender_number}}
                             result = await inawo_app.ainvoke(inputs, config)
-                            ai_reply = result["messages"][-1].content
-                            await send_whatsapp_message(sender_number, ai_reply)
+                            await send_whatsapp_message(sender_number, result["messages"][-1].content)
 
         return {"status": "success"}
     except Exception as e:
@@ -115,9 +105,6 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
 async def root():
     return {"status": "Inawo API is running", "engine": "Llama 3.3 70B"}
 
-# [Rest of your signup, login, sales, stats routes here...]
-# Ensure you keep the signup/login routes from your previous main.py here
-
 @app.post("/signup")
 async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
     existing = db.query(models.Vendor).filter(models.Vendor.email == vendor.email).first()
@@ -127,16 +114,11 @@ async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
     new_vendor = models.Vendor(
         email=vendor.email,
         business_name=vendor.business_name,
-        phone_number=vendor.phone_number,
-        category=vendor.category,
-        bank_name=vendor.bank_name,
-        account_number=vendor.account_number,
-        account_name=vendor.account_name,
         password_hash=hash_password(vendor.password)
     )
     db.add(new_vendor)
     db.commit()
-    return {"status": "success", "message": "Professional profile created!"}
+    return {"status": "success"}
 
 @app.post("/login")
 async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
@@ -145,23 +127,23 @@ async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     token = create_access_token(data={"sub": db_vendor.email, "id": db_vendor.id})
-    return {"access_token": token, "business_name": db_vendor.business_name}
+    return {"access_token": token}
+
+# --- LIFECYCLE (BOT PAUSED) ---
 
 @app.on_event("startup")
 async def startup_event():
-    # Wait for old processes to clear
-    await asyncio.sleep(5)
+    print("🚀 API Server is running. Telegram Bot is TEMPORARILY PAUSED for Webhook verification.")
     
-    if bot_application:
-        try:
-            await bot_application.initialize()
-            # We use 'asyncio.create_task' so the bot runs in the background.
-            # If it hits a 'Conflict', it won't crash the main FastAPI server.
-            asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
-            asyncio.create_task(bot_application.start())
-            print("✅ Telegram Bot logic started in background")
-        except Exception as e:
-            print(f"⚠️ Telegram Error (API stays alive): {e}")
+    # The code below is commented out to prevent the Telegram Conflict crash.
+    # if bot_application:
+    #     try:
+    #         await bot_application.initialize()
+    #         asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
+    #         asyncio.create_task(bot_application.start())
+    #         print("✅ Telegram Bot logic started in background")
+    #     except Exception as e:
+    #         print(f"⚠️ Telegram Error: {e}")
 
 if __name__ == "__main__":
     import uvicorn
