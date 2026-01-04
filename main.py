@@ -218,4 +218,12 @@ async def startup_event():
     try:
         await bot_application.initialize()
         asyncio.create_task(bot_application.updater.start_polling())
-        async
+        asyncio.create_task(bot_application.start())
+        print("✅ Multi-tenant System Online")
+    except Exception as e:
+        print(f"⚠️ Bot error: {e}")
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
