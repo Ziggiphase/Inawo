@@ -133,17 +133,24 @@ async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 API Server is running. Telegram Bot is TEMPORARILY PAUSED for Webhook verification.")
+    # 1. API always stays online for WhatsApp
+    print("🚀 API Server is running and stable.")
     
-    # The code below is commented out to prevent the Telegram Conflict crash.
-    # if bot_application:
-    #     try:
-    #         await bot_application.initialize()
-    #         asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
-    #         asyncio.create_task(bot_application.start())
-    #         print("✅ Telegram Bot logic started in background")
-    #     except Exception as e:
-    #         print(f"⚠️ Telegram Error: {e}")
+    # 2. Give old Render processes 10 seconds to finish shutting down
+    await asyncio.sleep(10)
+    
+    if bot_application:
+        try:
+            # 3. Initialize the bot
+            await bot_application.initialize()
+            
+            # Start polling in a background task so it doesn't block the API
+            asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
+            asyncio.create_task(bot_application.start())
+            print("✅ Telegram Bot is back online in the background!")
+        except Exception as e:
+            # Log the error but keep the server running
+            print(f"⚠️ Telegram Startup Note: {e}")
 
 if __name__ == "__main__":
     import uvicorn
