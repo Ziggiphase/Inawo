@@ -8,23 +8,25 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERSION = "v21.0" # Meta API version
 
-async def send_whatsapp_message(to_number: str, message_text: str):
-    """Sends a text message via WhatsApp Cloud API."""
-    url = f"https://graph.facebook.com/{VERSION}/{PHONE_NUMBER_ID}/messages"
-    
+async def send_whatsapp_message(to_number: str, text: str):
+    url = f"https://graph.facebook.com/v21.0/{os.getenv('PHONE_NUMBER_ID')}/messages"
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}",
         "Content-Type": "application/json",
     }
-    
     payload = {
         "messaging_product": "whatsapp",
-        "recipient_type": "individual",
         "to": to_number,
         "type": "text",
-        "text": {"body": message_text},
+        "text": {"body": text},
     }
-
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=payload)
+        # --- THE DEBUGGER ---
+        print(f"📤 Outbound Status: {response.status_code}")
+        print(f"📤 Outbound Body: {response.text}")
+        return response.json()
 async def get_whatsapp_media_bytes(media_id: str):
     """Fetches and downloads media from Meta's servers."""
     url = f"https://graph.facebook.com/{VERSION}/{media_id}"
