@@ -186,6 +186,31 @@ async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
     token = create_access_token(data={"sub": db_vendor.email, "id": db_vendor.id})
     return {"access_token": token}
 
+
+@app.get("/vendor/chats")
+async def get_vendor_chats(
+    db: Session = Depends(get_db),
+    current_vendor: models.Vendor = Depends(get_current_vendor)
+):
+    # Fetch all unique customer numbers that have chatted with this vendor
+    # We group by customer_number to show a list of "Chat Threads"
+    chats = db.query(
+        models.ChatSession.customer_number,
+        func.max(models.ChatSession.updated_at).label("last_message_time")
+    ).filter(models.ChatSession.vendor_id == current_vendor.id)\
+     .group_by(models.ChatSession.customer_number)\
+     .order_by(func.max(models.ChatSession.updated_at).desc())\
+     .all()
+
+    return [
+        {"customer": chat.customer_number, "last_active": chat.last_message_time} 
+        for chat in chats
+    ]
+
+
+
+
+
 # --- LIFECYCLE (BOT PAUSED) ---
 
 @app.on_event("startup")
