@@ -50,5 +50,5 @@ class Sale(Base):
     customer_name = Column(String(100))
     receipt_url = Column(String(255)) # Link to the uploaded image
     status = Column(String(20), default="Pending") # Pending, Confirmed, Rejected
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     vendor = relationship("Vendor", back_populates="sales")
