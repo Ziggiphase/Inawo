@@ -48,7 +48,7 @@ class VendorSignup(BaseModel):
     account_number: str = Field(..., min_length=10, max_length=10)
     account_name: str
 
-# --- WHATSAPP HANDSHAKE ---
+# --- WHATSAPP WEBHOOK ---
 
 @app.get("/webhook")
 @app.get("/webhook/")
@@ -58,19 +58,14 @@ async def verify_webhook(
     challenge: str = Query(None, alias="hub.challenge")
 ):
     verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN")
-    
-    print(f"DEBUG: Comparing Received Token '{token}' with Expected Token '{verify_token}'")
-
     if mode == "subscribe" and token == verify_token:
         return Response(content=challenge, media_type="text/plain")
-    
     return Response(content="Mismatch Error", status_code=403)
 
 @app.post("/webhook")
 async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
     try:
-        # 1. Standard WhatsApp Parsing
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
                 for change in entry.get("changes", []):
@@ -80,23 +75,29 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         sender_number = message["from"]
                         user_text = message.get("text", {}).get("body", "")
 
-                        # 2. VENDOR LOOKUP (The Multitenant Secret)
-                        # We find which vendor this customer is chatting with
-                        # (This assumes you have a ChatSession table linking users to vendors)
-                        vendor = db.query(models.Vendor).join(models.ChatSession).filter(
+                        # 1. VENDOR LOOKUP
+                        # Find vendor linked to this conversation
+                        session = db.query(models.ChatSession).filter(
                             models.ChatSession.customer_number == sender_number
                         ).first()
 
-                        if not vendor:
-                            # Fallback if it's a new customer
-                            business_context = "A helpful business assistant."
-                        else:
-                            # Pull the specific knowledge base for this vendor
-                            business_context = vendor.knowledge_base_text 
+                        vendor = db.query(models.Vendor).get(session.vendor_id) if session else None
+                        
+                        # 2. LOG CUSTOMER MESSAGE
+                        if vendor:
+                            new_msg = models.ChatMessage(
+                                vendor_id=vendor.id,
+                                sender=sender_number,
+                                content=user_text,
+                                role="user"
+                            )
+                            db.add(new_msg)
 
-                        # 3. FEED CONTEXT TO AI
-                        # We 'prime' the AI with the vendor's specific identity
-                        system_prompt = f"You are the AI assistant for {vendor.business_name if vendor else 'Inawo'}. Use this info: {business_context}"
+                        # 3. AI GENERATION WITH CONTEXT
+                        biz_name = vendor.business_name if vendor else "Inawo"
+                        kb_text = vendor.knowledge_base_text if vendor else "A helpful assistant."
+                        
+                        system_prompt = f"You are the AI assistant for {biz_name}. Identity/Prices: {kb_text}"
                         
                         inputs = {"messages": [("system", system_prompt), ("user", user_text)]}
                         config = {"configurable": {"thread_id": sender_number}}
@@ -104,141 +105,93 @@ async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db
                         result = await inawo_app.ainvoke(inputs, config)
                         ai_reply = result["messages"][-1].content
 
-                        # 4. SEND REPLY
+                        # 4. LOG AI REPLY & SEND
+                        if vendor:
+                            ai_msg = models.ChatMessage(
+                                vendor_id=vendor.id,
+                                sender="AI",
+                                content=ai_reply,
+                                role="assistant"
+                            )
+                            db.add(ai_msg)
+                            db.commit()
+
                         await send_whatsapp_message(sender_number, ai_reply)
 
         return {"status": "success"}
     except Exception as e:
         print(f"❌ Webhook Logic Error: {e}")
         return {"status": "error"}
-# --- OTHER ROUTES ---
 
-@app.get("/")
-async def root():
-    return {"status": "Inawo API is running", "engine": "Llama 3.3 70B"}
-
-@app.post("/signup")
-async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
-    existing = db.query(models.Vendor).filter(models.Vendor.email == vendor.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    new_vendor = models.Vendor(
-        email=vendor.email,
-        business_name=vendor.business_name,
-        password_hash=hash_password(vendor.password)
-    )
-    db.add(new_vendor)
-    db.commit()
-    return {"status": "success"}
-
+# --- VENDOR MANAGEMENT ROUTES ---
 
 @app.post("/upload-knowledge")
 async def upload_knowledge(
     file: UploadFile = File(...), 
     db: Session = Depends(get_db),
-    current_vendor: models.Vendor = Depends(get_current_vendor) # Securely identifies the logged-in vendor
+    current_vendor: models.Vendor = Depends(get_current_vendor)
 ):
     text_content = ""
     filename = file.filename.lower()
-
     try:
-        # 1. Handle PDF Files
         if filename.endswith(".pdf"):
             with pdfplumber.open(file.file) as pdf:
                 text_content = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
-
-        # 2. Handle Excel/CSV Files
         elif filename.endswith((".xlsx", ".csv")):
             df = pd.read_excel(file.file) if filename.endswith(".xlsx") else pd.read_csv(file.file)
             text_content = df.to_string()
-
-        # 3. Handle Plain Text
-        elif filename.endswith(".txt"):
-            text_content = (await file.read()).decode("utf-8")
-
-        if not text_content:
-            raise HTTPException(status_code=400, detail="Could not extract text from file.")
-
-        # 4. Save to Database
+        
         current_vendor.knowledge_base_text = text_content
-        db.add(current_vendor)
         db.commit()
-
-        return {
-            "status": "success", 
-            "message": f"Knowledge base updated for {current_vendor.business_name}",
-            "char_count": len(text_content)
-        }
-
+        return {"status": "success", "char_count": len(text_content)}
     except Exception as e:
-        print(f"❌ Upload Error: {e}")
-        raise HTTPException(status_code=500, detail="Error processing file.")
-
-
-
-@app.post("/login")
-async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
-    db_vendor = db.query(models.Vendor).filter(models.Vendor.email == vendor.email).first()
-    if not db_vendor or not verify_password(vendor.password, db_vendor.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    token = create_access_token(data={"sub": db_vendor.email, "id": db_vendor.id})
-    return {"access_token": token}
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/vendor/chats")
 async def get_vendor_chats(
     db: Session = Depends(get_db),
     current_vendor: models.Vendor = Depends(get_current_vendor)
 ):
-    # Fetch all unique customer numbers that have chatted with this vendor
-    # We group by customer_number to show a list of "Chat Threads"
     chats = db.query(
-        models.ChatSession.customer_number,
-        func.max(models.ChatSession.updated_at).label("last_message_time")
-    ).filter(models.ChatSession.vendor_id == current_vendor.id)\
-     .group_by(models.ChatSession.customer_number)\
-     .order_by(func.max(models.ChatSession.updated_at).desc())\
-     .all()
+        models.ChatMessage.sender,
+        func.max(models.ChatMessage.created_at).label("last_msg")
+    ).filter(models.ChatMessage.vendor_id == current_vendor.id)\
+     .group_by(models.ChatMessage.sender).all()
+    
+    return [{"customer": c.sender, "time": c.last_msg} for c in chats]
 
-    return [
-        {"customer": chat.customer_number, "last_active": chat.last_message_time} 
-        for chat in chats
-    ]
-
-
-
-
-
-# --- LIFECYCLE (BOT PAUSED) ---
+# --- LIFECYCLE ---
 
 @app.on_event("startup")
 async def startup_event():
-    # 1. Prioritize API availability
-    print("🚀 Inawo API is active and ready for WhatsApp.")
-    
-    # 2. Wait 15 seconds to let old Render 'ghost' processes die off
-    # This is the secret to avoiding the Telegram 'Conflict' error
+    print("🚀 Inawo API stable.")
     await asyncio.sleep(15)
-    
     if bot_application:
         try:
-            # 3. Initialize the bot
             await bot_application.initialize()
-            
-            # Start polling in a background task so it doesn't block the API thread
-            # 'drop_pending_updates=True' prevents the bot from spamming you with 
-            # old messages that were sent while the bot was paused.
             asyncio.create_task(bot_application.updater.start_polling(drop_pending_updates=True))
             asyncio.create_task(bot_application.start())
-            
-            print("✅ Telegram Bot is back online and safe!")
+            print("✅ Telegram Bot Active")
         except Exception as e:
-            # If a conflict STILL happens, we catch it here so the API stays online
-            print(f"⚠️ Telegram Startup Note (API is still running): {e}")
+            print(f"⚠️ Telegram conflict (API online): {e}")
+
+# Standard Auth Routes
+@app.post("/signup")
+async def signup(vendor: VendorSignup, db: Session = Depends(get_db)):
+    new_vendor = models.Vendor(email=vendor.email, business_name=vendor.business_name, password_hash=hash_password(vendor.password))
+    db.add(new_vendor); db.commit()
+    return {"status": "success"}
+
+@app.post("/login")
+async def login(vendor: VendorSignup, db: Session = Depends(get_db)):
+    db_v = db.query(models.Vendor).filter(models.Vendor.email == vendor.email).first()
+    if not db_v or not verify_password(vendor.password, db_v.password_hash):
+        raise HTTPException(status_code=401)
+    return {"access_token": create_access_token(data={"sub": db_v.email, "id": db_v.id})}
+
+@app.get("/")
+async def root(): return {"status": "running"}
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
