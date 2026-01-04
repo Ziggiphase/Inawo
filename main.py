@@ -17,9 +17,12 @@ from datetime import datetime, timedelta, timezone
 from database import get_db, engine
 import models
 from security import hash_password, verify_password, create_access_token
-from dependencies import get_current_vendor # Make sure you created this file!
+from dependencies import get_current_vendor 
 from pydantic import BaseModel, EmailStr, Field
-from whatsapp_service import send_whatsapp_message
+
+# --- AI & MESSAGING SERVICES ---
+from whatsapp_service import send_whatsapp_message, get_whatsapp_media_bytes
+from vision_service import extract_receipt_details
 from inawo_logic import inawo_app
 
 # Initialize Database Tables
@@ -134,23 +137,12 @@ async def onboard_vendor(
     return {"status": "success"}
 
 @app.get("/sales")
-async def get_sales(
-    db: Session = Depends(get_db),
-    current_vendor: models.Vendor = Depends(get_current_vendor)
-):
+async def get_sales(db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
     return db.query(models.Sale).filter(models.Sale.vendor_id == current_vendor.id).all()
 
 @app.post("/sales/{sale_id}/confirm")
-async def confirm_sale(
-    sale_id: int, 
-    db: Session = Depends(get_db),
-    current_vendor: models.Vendor = Depends(get_current_vendor)
-):
-    sale = db.query(models.Sale).filter(
-        models.Sale.id == sale_id, 
-        models.Sale.vendor_id == current_vendor.id
-    ).first()
-    
+async def confirm_sale(sale_id: int, db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
+    sale = db.query(models.Sale).filter(models.Sale.id == sale_id, models.Sale.vendor_id == current_vendor.id).first()
     if sale:
         sale.status = "Confirmed"
         db.commit()
@@ -158,69 +150,34 @@ async def confirm_sale(
     raise HTTPException(status_code=404, detail="Sale not found or unauthorized")
 
 @app.get("/vendor/chats")
-async def get_active_chats(
-    db: Session = Depends(get_db),
-    current_vendor: models.Vendor = Depends(get_current_vendor)
-):
+async def get_active_chats(db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
     chats = db.query(models.ChatSession).filter(models.ChatSession.vendor_id == current_vendor.id).all()
-    return [
-        {
-            "chat_id": chat.id,
-            "customer_name": chat.customer_name or "Guest Customer",
-            "is_manual_mode": chat.is_manual_mode
-        } for chat in chats
-    ]
-
-@app.post("/vendor/send-message")
-async def send_admin_message(
-    payload: AdminMessage,
-    current_vendor: models.Vendor = Depends(get_current_vendor)
-):
-    # Verify the chat belongs to this vendor before sending
-    # (Security check skipped here for brevity, but recommended)
-    try:
-        await bot_application.bot.send_message(
-            chat_id=payload.chat_id, 
-            text=f"👨‍💼 ({current_vendor.business_name}): {payload.text}"
-        )
-        return {"status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return [{"chat_id": chat.id, "customer_name": chat.customer_name or "Guest Customer", "is_manual_mode": chat.is_manual_mode} for chat in chats]
 
 @app.get("/vendor/stats")
-async def get_vendor_stats(
-    db: Session = Depends(get_db),
-    current_vendor: models.Vendor = Depends(get_current_vendor)
-):
-    total_revenue = db.query(func.sum(models.Sale.amount))\
-        .filter(models.Sale.vendor_id == current_vendor.id, models.Sale.status == "Confirmed")\
-        .scalar() or 0
-    
+async def get_vendor_stats(db: Session = Depends(get_db), current_vendor: models.Vendor = Depends(get_current_vendor)):
+    total_revenue = db.query(func.sum(models.Sale.amount)).filter(models.Sale.vendor_id == current_vendor.id, models.Sale.status == "Confirmed").scalar() or 0
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    daily_sales = db.query(
-        cast(models.Sale.created_at, Date).label("day"),
-        func.sum(models.Sale.amount).label("total")
-    ).filter(
-        models.Sale.vendor_id == current_vendor.id,
-        models.Sale.status == "Confirmed",
-        models.Sale.created_at >= seven_days_ago
-    ).group_by("day").order_by("day").all()
-
+    daily_sales = db.query(cast(models.Sale.created_at, Date).label("day"), func.sum(models.Sale.amount).label("total")).filter(models.Sale.vendor_id == current_vendor.id, models.Sale.status == "Confirmed", models.Sale.created_at >= seven_days_ago).group_by("day").order_by("day").all()
     chart_data = [{"date": str(s.day), "amount": s.total} for s in daily_sales]
-    
-    return {
-        "total_revenue": total_revenue,
-        "chart_data": chart_data
-    }
+    return {"total_revenue": total_revenue, "chart_data": chart_data}
 
-# --- WEBHOOKS & SYSTEM ---
+# --- WHATSAPP WEBHOOK ---
+
+@app.get("/webhook")
+async def verify_webhook(
+    mode: str = Query(None, alias="hub.mode"),
+    token: str = Query(None, alias="hub.verify_token"),
+    challenge: str = Query(None, alias="hub.challenge")
+):
+    if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
+        return Response(content=challenge, media_type="text/plain")
+    raise HTTPException(status_code=403, detail="Verification failed")
 
 @app.post("/webhook")
-async def handle_whatsapp_webhook(request: Request):
+async def handle_whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
-    
     try:
-        # Check if it's a valid message object
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
                 for change in entry.get("changes", []):
@@ -228,25 +185,37 @@ async def handle_whatsapp_webhook(request: Request):
                     if "messages" in value:
                         message = value["messages"][0]
                         sender_number = message["from"]
-                        user_text = message.get("text", {}).get("body", "")
 
-                        # 1. Run the AI Engine
-                        # (You'll pass business context here like we did for Telegram)
-                        inputs = {"messages": [("user", user_text)]}
-                        config = {"configurable": {"thread_id": sender_number}}
-                        
-                        result = await inawo_app.ainvoke(inputs, config)
-                        ai_reply = result["messages"][-1].content
+                        # 1. Handle IMAGES (Receipts)
+                        if message.get("type") == "image":
+                            media_id = message["image"]["id"]
+                            await send_whatsapp_message(sender_number, "Receipt received! Analyzing... 🧐")
+                            image_bytes = await get_whatsapp_media_bytes(media_id)
+                            if image_bytes:
+                                receipt_data = await extract_receipt_details(image_bytes)
+                                # Logic to find vendor and log sale would go here
+                                confirmation = f"✅ Analysis Complete!\nAmount: ₦{receipt_data.get('amount')}\nBank: {receipt_data.get('bank')}"
+                                await send_whatsapp_message(sender_number, confirmation)
 
-                        # 2. Send the reply back to WhatsApp
-                        await send_whatsapp_message(sender_number, ai_reply)
+                        # 2. Handle TEXT (AI Chat)
+                        elif message.get("type") == "text":
+                            user_text = message["text"]["body"]
+                            inputs = {"messages": [("user", user_text)]}
+                            config = {"configurable": {"thread_id": sender_number}}
+                            result = await inawo_app.ainvoke(inputs, config)
+                            ai_reply = result["messages"][-1].content
+                            await send_whatsapp_message(sender_number, ai_reply)
 
         return {"status": "success"}
     except Exception as e:
-        print(f"Webhook Processing Error: {e}")
+        print(f"Webhook Error: {e}")
         return {"status": "error"}
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+# --- BOT LIFECYCLE ---
+@app.on_event("startup")
+async def startup_event():
+    await asyncio.sleep(2)
+    try:
+        await bot_application.initialize()
+        asyncio.create_task(bot_application.updater.start_polling())
+        async
