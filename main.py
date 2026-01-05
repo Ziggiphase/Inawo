@@ -145,15 +145,18 @@ async def get_tg_link(curr: models.Vendor = Depends(get_current_vendor)):
 
 @app.on_event("startup")
 async def startup_event():
-    """Starts the bot in the background only after Render confirms health."""
     async def delayed_start():
-        await asyncio.sleep(45) # Increased delay for Render stability
+        await asyncio.sleep(45) # Wait for Render Health Check
         if bot_application:
             try:
+                # Force close any existing sessions before starting
                 await bot_application.initialize()
+                if bot_application.updater:
+                    await bot_application.updater.stop() 
+                
                 await bot_application.updater.start_polling(drop_pending_updates=True)
                 await bot_application.start()
-                print("✅ Telegram Polling Active")
+                print("✅ Telegram Polling Active and Unique")
             except Exception as e:
                 print(f"❌ Bot Fail: {e}")
 
