@@ -1,21 +1,29 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-import os
 
-# On Render, use the DATABASE_URL environment variable. 
-# It defaults to a local SQLite file for testing.
+# 1. Get the Database URL from Environment Variables (Render/Supabase)
+# Defaults to local SQLite for local development
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./inawo.db")
 
-# For PostgreSQL on Render, the URL must start with 'postgresql://' 
-# sometimes Render gives 'postgres://', so we fix it here:
+# 2. Fix PostgreSQL URL prefix for SQLAlchemy 1.4+ compatibility
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
+# 3. Create the Engine
+# pool_pre_ping=True checks the connection before using it (fixes "idling" errors)
+engine = create_engine(
+    DATABASE_URL, 
+    pool_pre_ping=True
+)
+
+# 4. Create the Session Factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# 5. Base class for our models
 Base = declarative_base()
 
-# This is the dependency we use in FastAPI routes
+# 6. Dependency for FastAPI routes
 def get_db():
     db = SessionLocal()
     try:
