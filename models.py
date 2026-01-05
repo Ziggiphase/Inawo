@@ -12,20 +12,27 @@ class Vendor(Base):
     phone_number = Column(String(20))
     password_hash = Column(String(200), nullable=False)
     
-    # Professional Profile & Inventory
+    # Profile & Business Info
     category = Column(String(50)) 
     business_address = Column(String(255))
-    out_of_stock_items = Column(Text, nullable=True) 
+    
+    # Bank Details (Added to fix Frontend Signup 422 Errors)
+    bank_name = Column(String(100), nullable=True)
+    account_number = Column(String(20), nullable=True)
+    account_name = Column(String(100), nullable=True)
+    
+    # AI Knowledge & Inventory
+    out_of_stock_items = Column(Text, nullable=True, default="") 
     knowledge_base_text = Column(Text, nullable=True)
     
-    # Notification & Identity
+    # Identity & Notifications
     telegram_chat_id = Column(String(50), nullable=True)
     is_verified = Column(Boolean, default=False)
     
     # Relationships
     orders = relationship("Order", back_populates="vendor")
     messages = relationship("ChatMessage", back_populates="vendor")
-    sales = relationship("Sale", back_populates="vendor") # Added this link back
+    sales = relationship("Sale", back_populates="vendor")
 
 class ChatSession(Base):
     __tablename__ = 'chat_sessions'
@@ -33,7 +40,7 @@ class ChatSession(Base):
     customer_number = Column(String(20), unique=True, nullable=False)
     vendor_id = Column(Integer, ForeignKey('vendors.id'))
     
-    # AI Control & State
+    # AI Logic State
     is_ai_paused = Column(Boolean, default=False)
     customer_name = Column(String(100), nullable=True)
     delivery_address = Column(Text, nullable=True)
@@ -57,7 +64,7 @@ class Order(Base):
     vendor_id = Column(Integer, ForeignKey('vendors.id'))
     customer_number = Column(String(20))
     items = Column(Text)
-    amount = Column(Float)
+    amount = Column(Float, default=0.0)
     status = Column(String(20), default="pending") 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
