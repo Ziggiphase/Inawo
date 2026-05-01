@@ -1,0 +1,145 @@
+:root {
+  /* Colors - Light Theme (High Contrast, Clean) */
+  --bg-primary: #ffffff;
+  --bg-secondary: #fafafa;
+  --bg-tertiary: #f4f4f5;
+  
+  --text-primary: #09090b;
+  --text-secondary: #71717a;
+  --text-tertiary: #a1a1aa;
+  
+  --border-color: #e4e4e7;
+  --border-color-hover: #d4d4d8;
+  
+  --accent-primary: #18181b;
+  --accent-secondary: #27272a;
+  --accent-foreground: #ffffff;
+
+  /* Glassmorphism / UI Tokens */
+  --glass-bg: rgba(255, 255, 255, 0.7);
+  --glass-border: rgba(228, 228, 231, 0.5);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 24px;
+  --radius-full: 9999px;
+  
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Colors - Dark Theme (Deep, Elegant, High-Tech) */
+    --bg-primary: #000000;
+    --bg-secondary: #09090b;
+    --bg-tertiary: #18181b;
+    
+    --text-primary: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    
+    --border-color: #27272a;
+    --border-color-hover: #3f3f46;
+    
+    --accent-primary: #fafafa;
+    --accent-secondary: #e4e4e7;
+    --accent-foreground: #09090b;
+
+    /* Glassmorphism */
+    --glass-bg: rgba(9, 9, 11, 0.6);
+    --glass-border: rgba(39, 39, 42, 0.5);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* Base Resets */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+/* Universal Typography Utilities */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+}
+
+p {
+  color: var(--text-secondary);
+}
+
+/* Glass Utility Classes */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.button-primary {
+  background: var(--accent-primary);
+  color: var(--accent-foreground);
+  padding: 12px 24px;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.button-primary:hover {
+  background: var(--accent-secondary);
+  transform: translateY(-1px);
+}
+
+.button-secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 12px 24px;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.button-secondary:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color-hover);
+}
